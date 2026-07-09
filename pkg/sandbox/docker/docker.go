@@ -54,6 +54,9 @@ func Provision(ctx context.Context, cfg Config) (sb *Sandbox, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("connecting to docker: %w", err)
 	}
+	if _, err := cli.Ping(ctx); err != nil {
+		return nil, fmt.Errorf("cannot reach the Docker daemon — is Docker running? (%w)", err)
+	}
 
 	suffix := randomHex(4)
 	name := fmt.Sprintf("firedrill-%s-%s", sanitize(cfg.Name), suffix)

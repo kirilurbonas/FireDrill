@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FireDrill — {{.Drill}}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; max-width: 780px;
+         margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; background: #fff; }
+  @media (prefers-color-scheme: dark) { body { color: #e6e6e6; background: #111; } }
+  .banner { padding: 1rem 1.25rem; border-radius: 8px; font-size: 1.25rem; font-weight: 700; color: #fff; }
+  .pass { background: #1a7f37; } .fail { background: #cf222e; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin-top: 2rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #8884; }
+  th { font-weight: 600; }
+  .ok { color: #1a7f37; font-weight: 700; } .bad { color: #cf222e; font-weight: 700; }
+  .skip { color: #9a6700; font-weight: 700; }
+  .muted { opacity: .65; font-size: .85rem; }
+  code { font-family: ui-monospace, monospace; font-size: .85em; }
+  .pill { display: inline-block; padding: .1rem .55rem; border: 1px solid #8886; border-radius: 999px;
+          font-size: .8rem; margin-right: .35rem; }
+</style>
+</head>
+<body>
+<h1>🔥 FireDrill — recovery drill <code>{{.Drill}}</code></h1>
+
+{{if .Verified}}<div class="banner pass">✔ RECOVERY VERIFIED</div>
+{{else}}<div class="banner fail">✘ RECOVERY NOT VERIFIED</div>{{end}}
+
+<h2>Objectives vs measured</h2>
+<table>
+  <tr><th></th><th>Objective</th><th>Measured</th><th></th></tr>
+  <tr><td>RTO (restore time)</td><td>{{.Objectives.RTO}}</td><td>{{secs .Measured.RestoreSeconds}}</td>
+      <td>{{if .Measured.RTOMet}}<span class="ok">met</span>{{else}}<span class="bad">missed</span>{{end}}</td></tr>
+  <tr><td>RPO (backup age)</td><td>{{.Objectives.RPO}}</td><td>{{secs .Backup.AgeSecs}}</td>
+      <td>{{if .Measured.RPOMet}}<span class="ok">met</span>{{else}}<span class="bad">missed</span>{{end}}</td></tr>
+</table>
+
+<h2>Verification checks</h2>
+<table>
+  <tr><th>Check</th><th>Result</th><th>Detail</th></tr>
+  {{range .Checks}}
+  <tr><td><code>{{.Name}}</code></td>
+      <td>{{if .Skipped}}<span class="skip">SKIP</span>{{else if .Passed}}<span class="ok">PASS</span>{{else}}<span class="bad">FAIL</span>{{end}}</td>
+      <td>{{.Detail}}</td></tr>
+  {{end}}
+</table>
+
+<h2>Backup</h2>
+<table>
+  <tr><td>Source</td><td><code>{{.Backup.URI}}</code></td></tr>
+  <tr><td>Produced</td><td>{{utc .Backup.ModTime}}</td></tr>
+  <tr><td>Size</td><td>{{.Backup.Bytes}} bytes</td></tr>
+</table>
+
+<h2>Sandbox</h2>
+<table>
+  <tr><td>Provider / image</td><td><code>{{.Sandbox.Provider}}</code> · <code>{{.Sandbox.Image}}</code></td></tr>
+  <tr><td>Destroyed after drill</td>
+      <td>{{if .Sandbox.Destroyed}}<span class="ok">yes</span>{{else}}<span class="bad">NO</span>{{end}}</td></tr>
+</table>
+
+{{if .Controls}}
+<h2>Compliance controls evidenced</h2>
+<p>{{range .Controls}}<span class="pill">{{.}}</span>{{end}}</p>
+{{end}}
+
+{{if .Error}}<h2>Error</h2><p class="bad"><code>{{.Error}}</code></p>{{end}}
+
+<p class="muted">Ran {{utc .StartedAt}} → {{utc .FinishedAt}} by {{.Tool}}.
+Machine-readable, signed evidence accompanies this report as JSON + .sig.</p>
+</body>
+</html>

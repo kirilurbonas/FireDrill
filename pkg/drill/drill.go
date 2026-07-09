@@ -11,6 +11,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver
 
 	"github.com/kirilurbonas/FireDrill/pkg/drivers/postgres"
+	"github.com/kirilurbonas/FireDrill/pkg/metrics"
 	"github.com/kirilurbonas/FireDrill/pkg/report"
 	sbdocker "github.com/kirilurbonas/FireDrill/pkg/sandbox/docker"
 	"github.com/kirilurbonas/FireDrill/pkg/source"
@@ -162,6 +163,22 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 		}
 		if _, err := report.Sign(path, priv); err != nil {
 			return e, path, fmt.Errorf("signing evidence: %w", err)
+		}
+	}
+	if d.Spec.Report.HTML {
+		htmlPath, err := report.WriteHTML(e, path)
+		if err != nil {
+			return e, path, fmt.Errorf("writing html report: %w", err)
+		}
+		if p != nil {
+			p.Info("report   %s", htmlPath)
+		}
+	}
+
+	// 7. Sinks — failures are warnings, never drill failures.
+	for _, serr := range metrics.Export(e, d.Spec.Report.Sinks) {
+		if p != nil {
+			p.Info("warning: metrics %v", serr)
 		}
 	}
 	return e, path, nil

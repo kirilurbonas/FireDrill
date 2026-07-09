@@ -24,4 +24,9 @@ spec:
     - smoke:     { sql: "select 1 from accounts where status='active' limit 1", expectRows: ">=1" }
   report:
     sign: true
+    html: true    # also write a shareable <evidence>.html report
     controls: [ISO27001-A.8.13, SOC2-A1.2]
+    # Optional metric sinks (failures are warnings, never drill failures):
+    # sinks:
+    #   - { type: prometheus, textfileDir: /var/lib/node_exporter/textfile }
+    #   - { type: pushgateway, url: http://pushgateway:9091 }

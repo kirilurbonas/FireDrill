@@ -12,18 +12,14 @@ FireDrill **does not back anything up**. It is the verification layer on top of 
 
 ## Demo
 
-```
-$ firedrill run payments-db -f examples/firedrill.yaml
-▸ provision sandbox  docker postgres:16.6 ............. ok   2.9s
-▸ restore  ./examples/demo.dump ....................... ok   3m48s
-▸ verify   restoreSucceeded  (restore completed) ...... PASS
-▸ verify   freshness  (backup age 41m (max 24h)) ...... PASS
-▸ verify   rowCount  (120000 rows (min 100000)) ....... PASS
-▸ verify   checksum  (ledger.id md5=0cfdcdc3…) ........ PASS
-▸ verify   smoke  (1 rows (expect >=1)) ............... PASS
-▸ measured RTO 3m50s (target 15m ✓)   RPO 41m (target 24h ✓)
-▸ evidence evidence/payments-db-2026-07-08T19-25-12Z.json  (signed ✓)
-✔ RECOVERY VERIFIED — sandbox destroyed
+![FireDrill demo](demo/demo.gif)
+
+## Install
+
+Download a binary from [releases](https://github.com/kirilurbonas/FireDrill/releases), or build from source:
+
+```sh
+git clone https://github.com/kirilurbonas/FireDrill && cd FireDrill && make build
 ```
 
 ## Quickstart
@@ -34,6 +30,7 @@ Requirements: Docker running locally. No Postgres client needed on the host — 
 make build                        # builds bin/firedrill
 ./bin/firedrill keygen            # one-time: create the evidence-signing keypair
 ./examples/make-demo-backup.sh    # generate a realistic demo pg_dump
+./bin/firedrill validate -f examples/firedrill.yaml
 ./bin/firedrill run payments-db -f examples/firedrill.yaml
 ./bin/firedrill verify-evidence evidence/payments-db-*.json
 ```
@@ -61,6 +58,21 @@ $ firedrill verify-evidence evidence/payments-db-2026-07-08T19-25-12Z.json
 ```
 
 Auditors can verify with `--public-key ~/.config/firedrill/firedrill.pub` to additionally pin the signing key.
+
+With `report.html: true`, a self-contained HTML report (`<evidence>.html`) is written next to the JSON — shareable with anyone who won't read JSON.
+
+## Metrics
+
+Drill results export as Prometheus metrics via `report.sinks`:
+
+```yaml
+report:
+  sinks:
+    - { type: prometheus, textfileDir: /var/lib/node_exporter/textfile }  # node_exporter textfile collector
+    - { type: pushgateway, url: http://pushgateway:9091 }                 # for scrape-based setups
+```
+
+Exported (per drill): `firedrill_drill_verified`, `firedrill_restore_duration_seconds` (measured RTO), `firedrill_backup_age_seconds` (RPO), `firedrill_rto_met`, `firedrill_rpo_met`, `firedrill_check_passed{check=…}`, `firedrill_drill_timestamp_seconds`. Alert on `firedrill_drill_verified == 0` or a rising `restore_duration` trend. Sink failures are warnings — they never fail a drill.
 
 ## Guardrails
 
@@ -93,7 +105,7 @@ make lint    # golangci-lint (incl. gosec)
 
 ## Roadmap
 
-v0.2 Velero driver + Prometheus metrics · v0.3 `RecoveryDrill` CRD + operator · v0.4 cloud sandboxes (Terraform/RDS) + compliance export. See [firedrill-plan.md](firedrill-plan.md).
+v0.3 MySQL + Velero drivers, `RecoveryDrill` CRD + operator (scheduled drills, history, Slack) · v0.4 cloud sandboxes (Terraform/RDS), sigstore/cosign attestations, compliance-control export. See [firedrill-plan.md](firedrill-plan.md).
 
 ## License
 

@@ -30,7 +30,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), keygenCmd(), verifyEvidenceCmd())
+	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(exitError)
@@ -88,6 +88,25 @@ func runCmd() *cobra.Command {
 	cmd.Flags().StringVar(&keyDir, "key-dir", "", "signing key directory (default ~/.config/firedrill)")
 	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable colored output")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the plan without touching Docker")
+	return cmd
+}
+
+func validateCmd() *cobra.Command {
+	var file string
+	cmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate a drill spec without running it",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			d, err := spec.Load(file)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ %s is valid — drill %q, %d checks, sandbox %s (ttl %s)\n",
+				file, d.Metadata.Name, len(d.Spec.Verify), d.Spec.Sandbox.Image, d.Spec.Sandbox.TTL)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&file, "file", "f", "firedrill.yaml", "drill spec file")
 	return cmd
 }
 

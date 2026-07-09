@@ -49,8 +49,12 @@ spec:
     - rowCount: { query: "select count(*) from ledger", min: 5000 }
     - checksum: { table: ledger, column: id }
     - smoke: { sql: "select 1 from ledger where amount = 1", expectRows: "==1" }
-  report: { sign: true }
-`, dump)
+  report:
+    sign: true
+    html: true
+    sinks:
+      - { type: prometheus, textfileDir: %s }
+`, dump, filepath.Join(dir, "metrics"))
 
 	d, err := spec.Parse(strings.NewReader(doc))
 	if err != nil {
@@ -78,6 +82,23 @@ spec:
 	}
 	if err := report.Verify(path, nil); err != nil {
 		t.Errorf("evidence signature invalid: %v", err)
+	}
+
+	htmlPath := strings.TrimSuffix(path, ".json") + ".html"
+	html, err := os.ReadFile(htmlPath)
+	if err != nil {
+		t.Fatalf("html report not written: %v", err)
+	}
+	if !strings.Contains(string(html), "RECOVERY VERIFIED") {
+		t.Error("html report missing verdict")
+	}
+
+	prom, err := os.ReadFile(filepath.Join(dir, "metrics", "firedrill-e2e.prom"))
+	if err != nil {
+		t.Fatalf("metrics textfile not written: %v", err)
+	}
+	if !strings.Contains(string(prom), `firedrill_drill_verified{drill="e2e"} 1`) {
+		t.Errorf("metrics missing verified gauge:\n%s", prom)
 	}
 }
 

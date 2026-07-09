@@ -94,8 +94,18 @@ type SmokeCheck struct {
 
 type Report struct {
 	Sign     bool     `yaml:"sign"`
+	HTML     bool     `yaml:"html,omitempty"` // also write <evidence>.html
 	Controls []string `yaml:"controls,omitempty"`
 	Dir      string   `yaml:"dir,omitempty"` // default ./evidence
+	Sinks    []Sink   `yaml:"sinks,omitempty"`
+}
+
+// Sink is a destination the drill result is exported to after the evidence
+// is written. Sink failures are warnings, never drill failures.
+type Sink struct {
+	Type        string `yaml:"type"`                  // prometheus | pushgateway
+	TextfileDir string `yaml:"textfileDir,omitempty"` // prometheus: node_exporter textfile-collector dir
+	URL         string `yaml:"url,omitempty"`         // pushgateway: base URL, e.g. http://pushgw:9091
 }
 
 // Duration wraps time.Duration with YAML parsing for values like "15m".
@@ -186,6 +196,20 @@ func (d *Drill) Validate() error {
 	for i, c := range d.Spec.Verify {
 		if err := c.validate(); err != nil {
 			add("spec.verify[%d]: %w", i, err)
+		}
+	}
+	for i, s := range d.Spec.Report.Sinks {
+		switch s.Type {
+		case "prometheus":
+			if s.TextfileDir == "" {
+				add("spec.report.sinks[%d]: prometheus sink requires textfileDir", i)
+			}
+		case "pushgateway":
+			if s.URL == "" {
+				add("spec.report.sinks[%d]: pushgateway sink requires url", i)
+			}
+		default:
+			add("spec.report.sinks[%d]: unsupported sink type %q (supported: prometheus, pushgateway)", i, s.Type)
 		}
 	}
 	return errors.Join(errs...)
