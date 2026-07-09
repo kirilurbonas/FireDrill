@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kirilurbonas/FireDrill/pkg/drill"
+	"github.com/kirilurbonas/FireDrill/pkg/operator"
 	"github.com/kirilurbonas/FireDrill/pkg/report"
 	"github.com/kirilurbonas/FireDrill/pkg/spec"
 	"github.com/kirilurbonas/FireDrill/pkg/version"
@@ -30,7 +31,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd())
+	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), operatorCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(exitError)
@@ -88,6 +89,20 @@ func runCmd() *cobra.Command {
 	cmd.Flags().StringVar(&keyDir, "key-dir", "", "signing key directory (default ~/.config/firedrill)")
 	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable colored output")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the plan without touching Docker")
+	return cmd
+}
+
+func operatorCmd() *cobra.Command {
+	var evidenceDir, metricsAddr string
+	cmd := &cobra.Command{
+		Use:   "operator",
+		Short: "Run the Kubernetes operator (reconciles RecoveryDrill resources)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return operator.RunManager(version.Version, evidenceDir, metricsAddr)
+		},
+	}
+	cmd.Flags().StringVar(&evidenceDir, "evidence-dir", "/evidence", "evidence output directory in the operator pod")
+	cmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", ":8080", "controller metrics endpoint")
 	return cmd
 }
 

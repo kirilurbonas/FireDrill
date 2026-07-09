@@ -1,0 +1,86 @@
+# FireDrill operator: runs scheduled recovery drills declared as
+# RecoveryDrill resources. Apply deploy/crd.yaml first.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: firedrill-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: firedrill-operator
+  namespace: firedrill-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: firedrill-operator
+rules:
+  - apiGroups: [firedrill.dev]
+    resources: [recoverydrills]
+    verbs: [get, list, watch]
+  - apiGroups: [firedrill.dev]
+    resources: [recoverydrills/status]
+    verbs: [get, update, patch]
+  # Sandboxes: pods in the sandbox namespace(s), plus namespace/networkpolicy bootstrap.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [pods/exec, pods/portforward]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, create]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: firedrill-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: firedrill-operator
+subjects:
+  - kind: ServiceAccount
+    name: firedrill-operator
+    namespace: firedrill-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: firedrill-operator
+  namespace: firedrill-system
+  labels: { app: firedrill-operator }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: firedrill-operator }
+  template:
+    metadata:
+      labels: { app: firedrill-operator }
+    spec:
+      serviceAccountName: firedrill-operator
+      containers:
+        - name: operator
+          image: ghcr.io/kirilurbonas/firedrill:latest  # or your build
+          args: [operator]
+          ports:
+            - { containerPort: 8080, name: metrics }
+            - { containerPort: 8081, name: health }
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+          volumeMounts:
+            - { name: evidence, mountPath: /evidence }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+      volumes:
+        - name: evidence
+          emptyDir: {}

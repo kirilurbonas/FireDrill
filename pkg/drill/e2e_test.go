@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,7 +26,7 @@ func TestE2EDrill(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("create table ledger (id bigserial primary key, amount bigint not null);\n")
 	sb.WriteString("insert into ledger (amount) select g from generate_series(1, 5000) g;\n")
-	if err := os.WriteFile(dump, []byte(sb.String()), 0o644); err != nil {
+	if err := os.WriteFile(dump, []byte(sb.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -85,7 +86,7 @@ spec:
 	}
 
 	htmlPath := strings.TrimSuffix(path, ".json") + ".html"
-	html, err := os.ReadFile(htmlPath)
+	html, err := os.ReadFile(htmlPath) // #nosec G304 -- test temp dir
 	if err != nil {
 		t.Fatalf("html report not written: %v", err)
 	}
@@ -93,7 +94,7 @@ spec:
 		t.Error("html report missing verdict")
 	}
 
-	prom, err := os.ReadFile(filepath.Join(dir, "metrics", "firedrill-e2e.prom"))
+	prom, err := os.ReadFile(filepath.Join(dir, "metrics", "firedrill-e2e.prom")) // #nosec G304 -- test temp dir
 	if err != nil {
 		t.Fatalf("metrics textfile not written: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestE2EMySQLDrill(t *testing.T) {
 	dump := filepath.Join(dir, "demo.sql")
 	sqlText := "create table ledger (id bigint primary key auto_increment, amount bigint not null);\n" +
 		"insert into ledger (amount) values " + rowValues(2000) + ";\n"
-	if err := os.WriteFile(dump, []byte(sqlText), 0o644); err != nil {
+	if err := os.WriteFile(dump, []byte(sqlText), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -150,6 +151,56 @@ spec:
 	}
 }
 
+// TestE2EKubernetesDrill runs the drill loop with the kubernetes sandbox
+// provider (pod + exec + port-forward). Skips when no cluster is reachable.
+func TestE2EKubernetesDrill(t *testing.T) {
+	if out, err := exec.Command("kubectl", "cluster-info").CombinedOutput(); err != nil {
+		t.Skipf("no reachable kubernetes cluster: %v (%s)", err, string(out))
+	}
+	dir := t.TempDir()
+
+	dump := filepath.Join(dir, "demo.sql")
+	sqlText := "create table ledger (id bigserial primary key, amount bigint not null);\n" +
+		"insert into ledger (amount) select g from generate_series(1, 5000) g;\n"
+	if err := os.WriteFile(dump, []byte(sqlText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := fmt.Sprintf(`
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata: { name: e2e-k8s }
+spec:
+  objectives: { rto: 10m, rpo: 24h }
+  source:
+    driver: postgres
+    from: { type: file, uri: %s }
+  sandbox: { provider: kubernetes, image: "postgres:16.6", ttl: 10m }
+  verify:
+    - restoreSucceeded: {}
+    - rowCount: { query: "select count(*) from ledger", min: 5000 }
+    - checksum: { table: ledger, column: id }
+  report: { sign: false }
+`, dump)
+
+	d, err := spec.Parse(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	e, _, err := drill.Run(ctx, d, drill.Options{EvidenceDir: filepath.Join(dir, "evidence"), Version: "e2e-test"})
+	if err != nil {
+		t.Fatalf("drill.Run: %v", err)
+	}
+	if !e.Verified {
+		t.Fatalf("k8s drill not verified: %+v", e)
+	}
+	if !e.Sandbox.Destroyed {
+		t.Error("sandbox pod was not destroyed")
+	}
+}
+
 func rowValues(n int) string {
 	var b strings.Builder
 	for i := 1; i <= n; i++ {
@@ -166,7 +217,7 @@ func rowValues(n int) string {
 func TestE2ECorruptBackup(t *testing.T) {
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "bad.sql")
-	if err := os.WriteFile(dump, []byte("this is not sql; select broken from;\n"), 0o644); err != nil {
+	if err := os.WriteFile(dump, []byte("this is not sql; select broken from;\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

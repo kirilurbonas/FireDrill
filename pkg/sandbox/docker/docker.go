@@ -22,20 +22,13 @@ import (
 	"github.com/docker/go-connections/nat"
 
 	"github.com/kirilurbonas/FireDrill/pkg/drivers"
+	"github.com/kirilurbonas/FireDrill/pkg/sandbox"
 )
 
 const (
 	dbName = "firedrill"
 	dbUser = "firedrill"
 )
-
-// Config describes the sandbox to provision.
-type Config struct {
-	Image  string        // e.g. postgres:16
-	TTL    time.Duration // hard teardown deadline
-	Name   string        // drill name, used for labels/container name
-	Driver drivers.Driver
-}
 
 // Sandbox is a running, isolated database container.
 type Sandbox struct {
@@ -51,11 +44,14 @@ type Sandbox struct {
 	Destroyed   bool
 }
 
-var _ drivers.Sandbox = (*Sandbox)(nil)
+var (
+	_ drivers.Sandbox = (*Sandbox)(nil)
+	_ sandbox.Sandbox = (*Sandbox)(nil)
+)
 
 // Provision pulls the image, creates an isolated network + container, waits
 // until the engine accepts connections, and arms the TTL watchdog.
-func Provision(ctx context.Context, cfg Config) (sb *Sandbox, err error) {
+func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("connecting to docker: %w", err)
@@ -198,10 +194,12 @@ func (s *Sandbox) Exec(ctx context.Context, cmd []string, stdin io.Reader) (int,
 }
 
 // Connection facts for drivers (drivers.Sandbox).
-func (s *Sandbox) HostPort() string { return s.hostPort }
-func (s *Sandbox) User() string     { return dbUser }
-func (s *Sandbox) Password() string { return s.password }
-func (s *Sandbox) DB() string       { return dbName }
+func (s *Sandbox) Host() string       { return "127.0.0.1" }
+func (s *Sandbox) HostPort() string   { return s.hostPort }
+func (s *Sandbox) User() string       { return dbUser }
+func (s *Sandbox) Password() string   { return s.password }
+func (s *Sandbox) DB() string         { return dbName }
+func (s *Sandbox) WasDestroyed() bool { return s.Destroyed }
 
 // Destroy force-removes the container and network. Idempotent.
 func (s *Sandbox) Destroy(ctx context.Context) error {

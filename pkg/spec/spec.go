@@ -57,9 +57,10 @@ type From struct {
 }
 
 type Sandbox struct {
-	Provider string   `yaml:"provider"` // docker
-	Image    string   `yaml:"image"`
-	TTL      Duration `yaml:"ttl"` // hard teardown guardrail
+	Provider  string   `yaml:"provider"` // docker | kubernetes
+	Image     string   `yaml:"image"`
+	TTL       Duration `yaml:"ttl"`                 // hard teardown guardrail
+	Namespace string   `yaml:"namespace,omitempty"` // kubernetes only; default "firedrill"
 }
 
 // Check is a single verification step. Exactly one field must be set.
@@ -177,8 +178,10 @@ func (d *Drill) Validate() error {
 	if d.Spec.Source.From.URI == "" {
 		add("spec.source.from.uri is required")
 	}
-	if d.Spec.Sandbox.Provider != "docker" {
-		add("spec.sandbox.provider: unsupported provider %q (supported: docker)", d.Spec.Sandbox.Provider)
+	switch d.Spec.Sandbox.Provider {
+	case "docker", "kubernetes":
+	default:
+		add("spec.sandbox.provider: unsupported provider %q (supported: docker, kubernetes)", d.Spec.Sandbox.Provider)
 	}
 	if d.Spec.Sandbox.Image == "" {
 		add("spec.sandbox.image is required")

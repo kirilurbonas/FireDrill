@@ -43,8 +43,8 @@ func (Driver) ReadyCmds(user, password, db string) [][]string {
 func (Driver) SQLDriver() string { return "mysql" }
 
 func (Driver) DSN(sb drivers.Sandbox) string {
-	return fmt.Sprintf("%s:%s@tcp(127.0.0.1:%s)/%s",
-		sb.User(), sb.Password(), sb.HostPort(), sb.DB())
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s",
+		sb.User(), sb.Password(), sb.Host(), sb.HostPort(), sb.DB())
 }
 
 // ChecksumQuery is an order-independent checksum: XOR of per-row CRC32s.

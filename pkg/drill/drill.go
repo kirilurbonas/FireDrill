@@ -17,7 +17,9 @@ import (
 	_ "github.com/kirilurbonas/FireDrill/pkg/drivers/postgres" // register postgres
 	"github.com/kirilurbonas/FireDrill/pkg/metrics"
 	"github.com/kirilurbonas/FireDrill/pkg/report"
+	"github.com/kirilurbonas/FireDrill/pkg/sandbox"
 	sbdocker "github.com/kirilurbonas/FireDrill/pkg/sandbox/docker"
+	sbk8s "github.com/kirilurbonas/FireDrill/pkg/sandbox/kubernetes"
 	"github.com/kirilurbonas/FireDrill/pkg/source"
 	"github.com/kirilurbonas/FireDrill/pkg/spec"
 	"github.com/kirilurbonas/FireDrill/pkg/verify"
@@ -67,12 +69,22 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	// 2. Provision the isolated sandbox. Destroy is guaranteed via defer and
 	// backstopped by the in-provider TTL watchdog.
 	t0 := time.Now()
-	sb, err := sbdocker.Provision(ctx, sbdocker.Config{
-		Image:  d.Spec.Sandbox.Image,
-		TTL:    d.Spec.Sandbox.TTL.Duration,
-		Name:   d.Metadata.Name,
-		Driver: driver,
-	})
+	scfg := sandbox.Config{
+		Image:     d.Spec.Sandbox.Image,
+		TTL:       d.Spec.Sandbox.TTL.Duration,
+		Name:      d.Metadata.Name,
+		Driver:    driver,
+		Namespace: d.Spec.Sandbox.Namespace,
+	}
+	var sb sandbox.Sandbox
+	switch d.Spec.Sandbox.Provider {
+	case "docker":
+		sb, err = sbdocker.Provision(ctx, scfg)
+	case "kubernetes":
+		sb, err = sbk8s.Provision(ctx, scfg)
+	default:
+		err = fmt.Errorf("unknown provider %q", d.Spec.Sandbox.Provider)
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("provisioning sandbox: %w", err)
 	}
@@ -80,7 +92,7 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 		if derr := sb.Destroy(context.Background()); derr != nil && p != nil {
 			p.Info("warning: sandbox teardown: %v", derr)
 		}
-		e.Sandbox.Destroyed = sb.Destroyed
+		e.Sandbox.Destroyed = sb.WasDestroyed()
 	}()
 	if p != nil {
 		p.Step(fmt.Sprintf("provision sandbox  %s %s", d.Spec.Sandbox.Provider, d.Spec.Sandbox.Image),

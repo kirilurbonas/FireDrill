@@ -43,8 +43,8 @@ func (Driver) ReadyCmds(user, _, db string) [][]string {
 func (Driver) SQLDriver() string { return "pgx" }
 
 func (Driver) DSN(sb drivers.Sandbox) string {
-	return fmt.Sprintf("postgres://%s:%s@127.0.0.1:%s/%s?sslmode=disable",
-		sb.User(), sb.Password(), sb.HostPort(), sb.DB())
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
+		sb.User(), sb.Password(), sb.Host(), sb.HostPort(), sb.DB())
 }
 
 // ChecksumQuery is an order-independent md5 over one column.

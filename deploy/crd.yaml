@@ -1,0 +1,67 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: recoverydrills.firedrill.dev
+spec:
+  group: firedrill.dev
+  names:
+    kind: RecoveryDrill
+    listKind: RecoveryDrillList
+    plural: recoverydrills
+    singular: recoverydrill
+    shortNames: [drill, drills]
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Verified
+          type: boolean
+          jsonPath: .status.verified
+        - name: Last Run
+          type: date
+          jsonPath: .status.lastRunTime
+        - name: Schedule
+          type: string
+          jsonPath: .spec.schedule
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              # The CRD spec is exactly the firedrill.yaml `spec:` block; the
+              # operator validates it with the same code the CLI uses.
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              required: [objectives, source, sandbox, verify]
+              properties:
+                schedule:
+                  type: string
+                  description: Standard cron expression; empty runs the drill once per spec change.
+                objectives:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                source:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                sandbox:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                verify:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                report:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

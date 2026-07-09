@@ -14,6 +14,10 @@ import (
 // the container and know the connection facts. Implemented by sandbox/docker.
 type Sandbox interface {
 	Exec(ctx context.Context, cmd []string, stdin io.Reader) (int, string, error)
+	// Host and HostPort are the address the drill process can reach the
+	// sandbox database on (loopback for docker, pod IP or a local
+	// port-forward for kubernetes).
+	Host() string
 	HostPort() string
 	User() string
 	Password() string

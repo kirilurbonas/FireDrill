@@ -16,7 +16,7 @@ import (
 // Evidence is the audit record for one drill run.
 type Evidence struct {
 	Drill      string    `json:"drill"`
-	Tool       string    `json:"tool"`    // firedrill vX.Y.Z
+	Tool       string    `json:"tool"` // firedrill vX.Y.Z
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
 

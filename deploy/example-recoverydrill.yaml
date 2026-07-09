@@ -1,0 +1,29 @@
+# A RecoveryDrill custom resource — the spec block is exactly the
+# firedrill.yaml spec. The operator runs it on the cron schedule and
+# records the outcome in .status.
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata:
+  name: payments-db
+  namespace: firedrill-system
+spec:
+  schedule: "0 3 * * *"   # nightly 03:00
+  objectives:
+    rto: 15m
+    rpo: 24h
+  source:
+    driver: postgres
+    from: { type: s3, uri: "s3://acme-backups/payments/latest.dump", region: eu-west-1 }
+  sandbox:
+    provider: kubernetes
+    image: postgres:16.6
+    ttl: 30m
+  verify:
+    - restoreSucceeded: {}
+    - freshness: { maxAge: 24h }
+    - rowCount:  { query: "select count(*) from ledger", min: 1000000 }
+    - checksum:  { table: ledger, column: id }
+  report:
+    sign: false   # mount a key and enable when needed
+    sinks:
+      - { type: pushgateway, url: "http://pushgateway.monitoring:9091" }

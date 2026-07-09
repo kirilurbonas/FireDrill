@@ -61,6 +61,23 @@ Auditors can verify with `--public-key ~/.config/firedrill/firedrill.pub` to add
 
 With `report.html: true`, a self-contained HTML report (`<evidence>.html`) is written next to the JSON — shareable with anyone who won't read JSON.
 
+## Kubernetes
+
+Two levels of Kubernetes support:
+
+**Sandbox provider** — set `sandbox.provider: kubernetes` and the drill provisions the sandbox as a pod (dedicated namespace, deny-all-egress NetworkPolicy, random credentials, TTL force-delete) instead of a Docker container. The CLI reaches it through a port-forward; in-cluster it uses the pod IP.
+
+**Operator** — declare drills as `RecoveryDrill` custom resources and let the operator run them on a cron schedule:
+
+```sh
+kubectl apply -f deploy/crd.yaml
+kubectl apply -f deploy/operator.yaml      # or run `firedrill operator` with a kubeconfig
+kubectl apply -f deploy/example-recoverydrill.yaml
+kubectl get drills -n firedrill-system     # NAME  PHASE  VERIFIED  LAST RUN  SCHEDULE
+```
+
+The CR's `spec:` block is exactly the `firedrill.yaml` spec — the operator validates and runs it with the same code as the CLI, and records the outcome (`phase`, `verified`, measured RTO/RPO) in `.status`.
+
 ## Metrics
 
 Drill results export as Prometheus metrics via `report.sinks`:
@@ -105,7 +122,7 @@ make lint    # golangci-lint (incl. gosec)
 
 ## Roadmap
 
-v0.3 `RecoveryDrill` CRD + Kubernetes operator (scheduled drills, history, Slack), Velero driver · v0.4 cloud sandboxes (Terraform/RDS), sigstore/cosign attestations, compliance-control export. See [firedrill-plan.md](firedrill-plan.md).
+v0.4 Slack notifications, Velero driver, cloud sandboxes (Terraform/RDS), sigstore/cosign attestations, compliance-control export, Grafana dashboard. See [firedrill-plan.md](firedrill-plan.md).
 
 ## License
 
