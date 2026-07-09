@@ -53,7 +53,7 @@ func TestParseErrors(t *testing.T) {
 	cases := map[string]string{
 		"unknown field":  strings.Replace(valid, "image:", "imagee:", 1),
 		"bad kind":       strings.Replace(valid, "RecoveryDrill", "Backup", 1),
-		"bad driver":     strings.Replace(valid, "driver: postgres", "driver: mysql", 1),
+		"bad driver":     strings.Replace(valid, "driver: postgres", "driver: oracle", 1),
 		"no ttl":         strings.Replace(valid, "ttl: 30m", "ttl: 0s", 1),
 		"bad duration":   strings.Replace(valid, "rto: 15m", "rto: soon", 1),
 		"two check keys": strings.Replace(valid, "- freshness:", "  freshness2: 1\n    - freshness:", 1),

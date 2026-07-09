@@ -1,7 +1,8 @@
-// Package docker provisions ephemeral, isolated Postgres sandboxes as
+// Package docker provisions ephemeral, isolated database sandboxes as
 // Docker containers. Sandboxes bind to loopback only, live on their own
 // bridge network, use random one-off credentials, and are force-destroyed
-// when the TTL expires — even if the drill hangs.
+// when the TTL expires — even if the drill hangs. Engine specifics
+// (environment, readiness, ports) come from the drill's driver.
 package docker
 
 import (
@@ -19,6 +20,8 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
+
+	"github.com/kirilurbonas/FireDrill/pkg/drivers"
 )
 
 const (
@@ -28,12 +31,13 @@ const (
 
 // Config describes the sandbox to provision.
 type Config struct {
-	Image string        // e.g. postgres:16
-	TTL   time.Duration // hard teardown deadline
-	Name  string        // drill name, used for labels/container name
+	Image  string        // e.g. postgres:16
+	TTL    time.Duration // hard teardown deadline
+	Name   string        // drill name, used for labels/container name
+	Driver drivers.Driver
 }
 
-// Sandbox is a running, isolated Postgres container.
+// Sandbox is a running, isolated database container.
 type Sandbox struct {
 	ContainerID string
 	networkID   string
@@ -47,8 +51,10 @@ type Sandbox struct {
 	Destroyed   bool
 }
 
+var _ drivers.Sandbox = (*Sandbox)(nil)
+
 // Provision pulls the image, creates an isolated network + container, waits
-// until Postgres accepts connections, and arms the TTL watchdog.
+// until the engine accepts connections, and arms the TTL watchdog.
 func Provision(ctx context.Context, cfg Config) (sb *Sandbox, err error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -62,8 +68,8 @@ func Provision(ctx context.Context, cfg Config) (sb *Sandbox, err error) {
 	name := fmt.Sprintf("firedrill-%s-%s", sanitize(cfg.Name), suffix)
 	password := randomHex(16)
 
-	// Dedicated internal-capable bridge network: sandbox cannot be reached
-	// from (or confused with) anything else on the default bridge.
+	// Dedicated bridge network: the sandbox cannot be reached from (or
+	// confused with) anything else on the default bridge.
 	nw, err := cli.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge"})
 	if err != nil {
 		return nil, fmt.Errorf("creating sandbox network: %w", err)
@@ -83,21 +89,17 @@ func Provision(ctx context.Context, cfg Config) (sb *Sandbox, err error) {
 	_, _ = io.Copy(io.Discard, rc)
 	_ = rc.Close()
 
-	pgPort := nat.Port("5432/tcp")
+	enginePort := nat.Port(cfg.Driver.Port())
 	created, err := cli.ContainerCreate(ctx,
 		&container.Config{
-			Image: cfg.Image,
-			Env: []string{
-				"POSTGRES_DB=" + dbName,
-				"POSTGRES_USER=" + dbUser,
-				"POSTGRES_PASSWORD=" + password,
-			},
+			Image:        cfg.Image,
+			Env:          cfg.Driver.ContainerEnv(dbUser, password, dbName),
 			Labels:       map[string]string{"firedrill": "sandbox", "firedrill/drill": cfg.Name},
-			ExposedPorts: nat.PortSet{pgPort: struct{}{}},
+			ExposedPorts: nat.PortSet{enginePort: struct{}{}},
 		},
 		&container.HostConfig{
 			// Loopback only: the sandbox is never exposed beyond this host.
-			PortBindings: nat.PortMap{pgPort: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: ""}}},
+			PortBindings: nat.PortMap{enginePort: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: ""}}},
 			AutoRemove:   false,
 			NetworkMode:  container.NetworkMode(nw.ID),
 		},
@@ -111,7 +113,7 @@ func Provision(ctx context.Context, cfg Config) (sb *Sandbox, err error) {
 		return nil, fmt.Errorf("starting sandbox: %w", err)
 	}
 
-	if err := sb.waitReady(ctx); err != nil {
+	if err := sb.waitReady(ctx, cfg.Driver.ReadyCmds(dbUser, password, dbName)); err != nil {
 		return nil, err
 	}
 
@@ -119,7 +121,7 @@ func Provision(ctx context.Context, cfg Config) (sb *Sandbox, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("inspecting sandbox: %w", err)
 	}
-	bindings := insp.NetworkSettings.Ports[pgPort]
+	bindings := insp.NetworkSettings.Ports[enginePort]
 	if len(bindings) == 0 {
 		return nil, fmt.Errorf("sandbox has no published port")
 	}
@@ -139,42 +141,39 @@ func Provision(ctx context.Context, cfg Config) (sb *Sandbox, err error) {
 	return sb, nil
 }
 
-// waitReady polls pg_isready inside the container until Postgres accepts
-// connections as the drill user (the entrypoint restarts once during init).
-func (s *Sandbox) waitReady(ctx context.Context) error {
-	deadline := time.Now().Add(2 * time.Minute)
+// waitReady polls the driver's readiness commands until every one exits 0
+// in a single pass (database entrypoints often restart once during init).
+func (s *Sandbox) waitReady(ctx context.Context, cmds [][]string) error {
+	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		code, _, err := s.Exec(ctx, []string{"pg_isready", "-U", dbUser, "-d", dbName})
-		if err == nil && code == 0 {
-			// pg_isready can pass during the init-phase restart; confirm with a real query.
-			code, _, err = s.Exec(ctx, []string{"psql", "-U", dbUser, "-d", dbName, "-c", "select 1"})
-			if err == nil && code == 0 {
-				return nil
+		ready := true
+		for _, cmd := range cmds {
+			code, _, err := s.Exec(ctx, cmd, nil)
+			if err != nil || code != 0 {
+				ready = false
+				break
 			}
+		}
+		if ready {
+			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("sandbox postgres not ready after 2m")
+	return fmt.Errorf("sandbox database not ready after 3m")
 }
 
 // Exec runs a command inside the sandbox container and returns its exit
 // code and combined output. stdin, when non-nil, is streamed to the command.
-func (s *Sandbox) Exec(ctx context.Context, cmd []string, opts ...ExecOption) (int, string, error) {
-	eo := execOpts{}
-	for _, o := range opts {
-		o(&eo)
-	}
-	execCfg := container.ExecOptions{
+func (s *Sandbox) Exec(ctx context.Context, cmd []string, stdin io.Reader) (int, string, error) {
+	created, err := s.cli.ContainerExecCreate(ctx, s.ContainerID, container.ExecOptions{
 		Cmd:          cmd,
-		Env:          eo.env,
 		AttachStdout: true,
 		AttachStderr: true,
-		AttachStdin:  eo.stdin != nil,
-	}
-	created, err := s.cli.ContainerExecCreate(ctx, s.ContainerID, execCfg)
+		AttachStdin:  stdin != nil,
+	})
 	if err != nil {
 		return -1, "", fmt.Errorf("exec create: %w", err)
 	}
@@ -184,9 +183,9 @@ func (s *Sandbox) Exec(ctx context.Context, cmd []string, opts ...ExecOption) (i
 	}
 	defer att.Close()
 
-	if eo.stdin != nil {
+	if stdin != nil {
 		go func() {
-			_, _ = io.Copy(att.Conn, eo.stdin)
+			_, _ = io.Copy(att.Conn, stdin)
 			_ = att.CloseWrite()
 		}()
 	}
@@ -198,25 +197,11 @@ func (s *Sandbox) Exec(ctx context.Context, cmd []string, opts ...ExecOption) (i
 	return insp.ExitCode, string(out), nil
 }
 
-type execOpts struct {
-	stdin io.Reader
-	env   []string
-}
-
-type ExecOption func(*execOpts)
-
-func WithStdin(r io.Reader) ExecOption { return func(o *execOpts) { o.stdin = r } }
-func WithEnv(env ...string) ExecOption { return func(o *execOpts) { o.env = env } }
-
-// DSN returns a connection string reachable from this host only.
-func (s *Sandbox) DSN() string {
-	return fmt.Sprintf("postgres://%s:%s@127.0.0.1:%s/%s?sslmode=disable",
-		dbUser, s.password, s.hostPort, dbName)
-}
-
-// User and DB expose the sandbox credentials needed for in-container tools.
-func (s *Sandbox) User() string { return dbUser }
-func (s *Sandbox) DB() string   { return dbName }
+// Connection facts for drivers (drivers.Sandbox).
+func (s *Sandbox) HostPort() string { return s.hostPort }
+func (s *Sandbox) User() string     { return dbUser }
+func (s *Sandbox) Password() string { return s.password }
+func (s *Sandbox) DB() string       { return dbName }
 
 // Destroy force-removes the container and network. Idempotent.
 func (s *Sandbox) Destroy(ctx context.Context) error {

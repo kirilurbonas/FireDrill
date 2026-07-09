@@ -8,7 +8,7 @@
 
 FireDrill restores your real backups into a disposable, isolated sandbox, verifies the data actually came back intact, measures the true recovery time, and emits signed, audit-grade evidence — then destroys the sandbox. It answers the question every backup tool quietly dodges: *if today were the disaster, would you actually get your data back — and how long would it take?*
 
-FireDrill **does not back anything up**. It is the verification layer on top of whatever backup you already run (`pg_dump`, pgBackRest, RDS snapshots, …): backup-agnostic recovery verification with audit-grade proof.
+FireDrill **does not back anything up**. It is the verification layer on top of whatever backup you already run (`pg_dump`, `mysqldump`, pgBackRest, RDS snapshots, …): backup-agnostic recovery verification with audit-grade proof. Postgres and MySQL are supported today; the driver interface is built for more.
 
 ## Demo
 
@@ -46,7 +46,7 @@ Exit codes: `0` recovery verified · `1` drill ran but recovery not verified · 
 5. **Report** — a JSON evidence record signed with ed25519, mapped to compliance controls (`ISO27001-A.8.13`, `SOC2-A1.2`, …).
 6. **Destroy** the sandbox — guaranteed by both a deferred teardown and an in-process TTL watchdog.
 
-See [examples/firedrill.yaml](examples/firedrill.yaml) for the full spec format and [docs/architecture.md](docs/architecture.md) for design.
+See [examples/firedrill.yaml](examples/firedrill.yaml) (Postgres) and [examples/firedrill-mysql.yaml](examples/firedrill-mysql.yaml) (MySQL) for the spec format, and [docs/architecture.md](docs/architecture.md) for design.
 
 ## Evidence
 
@@ -105,7 +105,7 @@ make lint    # golangci-lint (incl. gosec)
 
 ## Roadmap
 
-v0.3 MySQL + Velero drivers, `RecoveryDrill` CRD + operator (scheduled drills, history, Slack) · v0.4 cloud sandboxes (Terraform/RDS), sigstore/cosign attestations, compliance-control export. See [firedrill-plan.md](firedrill-plan.md).
+v0.3 `RecoveryDrill` CRD + Kubernetes operator (scheduled drills, history, Slack), Velero driver · v0.4 cloud sandboxes (Terraform/RDS), sigstore/cosign attestations, compliance-control export. See [firedrill-plan.md](firedrill-plan.md).
 
 ## License
 

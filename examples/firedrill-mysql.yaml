@@ -1,0 +1,29 @@
+# MySQL drill example — same shape as the Postgres one, different engine.
+# The backup must be a mysqldump SQL file (plain format).
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata:
+  name: orders-db
+spec:
+  objectives:
+    rto: 15m
+    rpo: 24h
+  source:
+    driver: mysql
+    from:
+      type: file
+      uri: ./examples/orders.sql
+  sandbox:
+    provider: docker
+    image: mysql:8.4
+    ttl: 30m
+  verify:
+    - restoreSucceeded: {}
+    - freshness: { maxAge: 24h }
+    - rowCount:  { query: "select count(*) from orders", min: 1000 }
+    - checksum:  { table: orders, column: id }
+    - smoke:     { sql: "select 1 from orders where status='shipped' limit 1", expectRows: ">=1" }
+  report:
+    sign: true
+    html: true
+    controls: [ISO27001-A.8.13, SOC2-A1.2]

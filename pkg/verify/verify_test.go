@@ -67,8 +67,13 @@ func TestDataChecksSkippedOnRestoreFailure(t *testing.T) {
 }
 
 func TestChecksumIdentifierValidation(t *testing.T) {
-	r := checksum(context.Background(), nil, &spec.ChecksumCheck{Table: "ledger; drop table x", Column: "id"})
+	q := func(table, col string) string { return "select 1" }
+	r := checksum(context.Background(), nil, &spec.ChecksumCheck{Table: "ledger; drop table x", Column: "id"}, q)
 	if r.Passed || r.Detail != "invalid table/column identifier" {
 		t.Errorf("expected identifier rejection, got %+v", r)
+	}
+	r = checksum(context.Background(), nil, &spec.ChecksumCheck{Table: "ledger", Column: "id"}, nil)
+	if r.Passed || r.Detail != "no checksum dialect configured" {
+		t.Errorf("expected nil-dialect rejection, got %+v", r)
 	}
 }

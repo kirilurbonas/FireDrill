@@ -164,8 +164,10 @@ func (d *Drill) Validate() error {
 	if d.Metadata.Name == "" {
 		add("metadata.name is required")
 	}
-	if d.Spec.Source.Driver != "postgres" {
-		add("spec.source.driver: unsupported driver %q (supported: postgres)", d.Spec.Source.Driver)
+	switch d.Spec.Source.Driver {
+	case "postgres", "mysql":
+	default:
+		add("spec.source.driver: unsupported driver %q (supported: postgres, mysql)", d.Spec.Source.Driver)
 	}
 	switch d.Spec.Source.From.Type {
 	case "file", "s3":

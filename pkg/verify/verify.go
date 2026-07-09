@@ -20,6 +20,9 @@ type Context struct {
 	RestoreErr error         // nil if the restore succeeded
 	BackupAge  time.Duration // now - backup mod time
 	RTO        time.Duration // objective, for reporting only
+	// ChecksumQuery builds the engine-dialect checksum query. Identifiers
+	// are validated before this is called.
+	ChecksumQuery func(table, column string) string
 }
 
 // Result is the outcome of one check.
@@ -70,7 +73,7 @@ func runOne(ctx context.Context, db *sql.DB, c spec.Check, dc Context) Result {
 		})
 
 	case c.Checksum != nil:
-		return dataCheck(dc, "checksum", func() Result { return checksum(ctx, db, c.Checksum) })
+		return dataCheck(dc, "checksum", func() Result { return checksum(ctx, db, c.Checksum, dc.ChecksumQuery) })
 
 	case c.Smoke != nil:
 		return dataCheck(dc, "smoke", func() Result { return smoke(ctx, db, c.Smoke) })
@@ -88,16 +91,17 @@ func dataCheck(dc Context, name string, run func() Result) Result {
 
 var identRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
 
-// checksum computes an order-independent md5 over one column of a table.
-// Identifiers are validated (not parameterizable in SQL) before interpolation.
-func checksum(ctx context.Context, db *sql.DB, c *spec.ChecksumCheck) Result {
+// checksum computes an order-independent checksum over one column of a
+// table, using the driver's dialect. Identifiers are validated (they cannot
+// be bound as SQL params) before interpolation.
+func checksum(ctx context.Context, db *sql.DB, c *spec.ChecksumCheck, query func(table, column string) string) Result {
 	if !identRe.MatchString(c.Table) || !identRe.MatchString(c.Column) {
 		return Result{Name: "checksum", Passed: false, Detail: "invalid table/column identifier"}
 	}
-	// #nosec G201 -- identifiers cannot be bound as SQL params; validated by identRe above
-	q := fmt.Sprintf(
-		`select coalesce(md5(string_agg(%s::text, ',' order by %s)), 'empty') from %s`,
-		c.Column, c.Column, c.Table)
+	if query == nil {
+		return Result{Name: "checksum", Passed: false, Detail: "no checksum dialect configured"}
+	}
+	q := query(c.Table, c.Column)
 	var sum string
 	if err := db.QueryRowContext(ctx, q).Scan(&sum); err != nil {
 		return Result{Name: "checksum", Passed: false, Detail: "query failed: " + err.Error()}

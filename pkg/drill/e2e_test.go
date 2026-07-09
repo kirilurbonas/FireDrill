@@ -102,6 +102,65 @@ spec:
 	}
 }
 
+// TestE2EMySQLDrill runs the drill loop against a MySQL sandbox, proving the
+// driver abstraction: same spec shape, different engine.
+func TestE2EMySQLDrill(t *testing.T) {
+	dir := t.TempDir()
+
+	dump := filepath.Join(dir, "demo.sql")
+	sqlText := "create table ledger (id bigint primary key auto_increment, amount bigint not null);\n" +
+		"insert into ledger (amount) values " + rowValues(2000) + ";\n"
+	if err := os.WriteFile(dump, []byte(sqlText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := fmt.Sprintf(`
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata: { name: e2e-mysql }
+spec:
+  objectives: { rto: 10m, rpo: 24h }
+  source:
+    driver: mysql
+    from: { type: file, uri: %s }
+  sandbox: { provider: docker, image: "mysql:8.4", ttl: 10m }
+  verify:
+    - restoreSucceeded: {}
+    - rowCount: { query: "select count(*) from ledger", min: 2000 }
+    - checksum: { table: ledger, column: id }
+    - smoke: { sql: "select 1 from ledger where amount = 1", expectRows: "==1" }
+  report: { sign: false }
+`, dump)
+
+	d, err := spec.Parse(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	e, _, err := drill.Run(ctx, d, drill.Options{EvidenceDir: filepath.Join(dir, "evidence"), Version: "e2e-test"})
+	if err != nil {
+		t.Fatalf("drill.Run: %v", err)
+	}
+	if !e.Verified {
+		t.Fatalf("mysql drill not verified: %+v", e)
+	}
+	if !e.Sandbox.Destroyed {
+		t.Error("sandbox was not destroyed")
+	}
+}
+
+func rowValues(n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		if i > 1 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "(%d)", i)
+	}
+	return b.String()
+}
+
 // TestE2ECorruptBackup proves a garbage backup yields a failed (not verified)
 // drill — the whole point of the product.
 func TestE2ECorruptBackup(t *testing.T) {

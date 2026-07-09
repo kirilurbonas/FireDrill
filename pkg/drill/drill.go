@@ -6,11 +6,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql" // mysql database/sql driver
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver
 
-	"github.com/kirilurbonas/FireDrill/pkg/drivers/postgres"
+	"github.com/kirilurbonas/FireDrill/pkg/drivers"
+	_ "github.com/kirilurbonas/FireDrill/pkg/drivers/mysql"    // register mysql
+	_ "github.com/kirilurbonas/FireDrill/pkg/drivers/postgres" // register postgres
 	"github.com/kirilurbonas/FireDrill/pkg/metrics"
 	"github.com/kirilurbonas/FireDrill/pkg/report"
 	sbdocker "github.com/kirilurbonas/FireDrill/pkg/sandbox/docker"
@@ -43,6 +47,11 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	e.Sandbox.Image = d.Spec.Sandbox.Image
 	e.Controls = d.Spec.Report.Controls
 
+	driver, err := drivers.Get(d.Spec.Source.Driver)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w (available: %s)", err, strings.Join(drivers.Names(), ", "))
+	}
+
 	// 1. Fetch the backup (read-only).
 	backup, err := source.Fetch(ctx, d.Spec.Source.From)
 	if err != nil {
@@ -59,9 +68,10 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	// backstopped by the in-provider TTL watchdog.
 	t0 := time.Now()
 	sb, err := sbdocker.Provision(ctx, sbdocker.Config{
-		Image: d.Spec.Sandbox.Image,
-		TTL:   d.Spec.Sandbox.TTL.Duration,
-		Name:  d.Metadata.Name,
+		Image:  d.Spec.Sandbox.Image,
+		TTL:    d.Spec.Sandbox.TTL.Duration,
+		Name:   d.Metadata.Name,
+		Driver: driver,
 	})
 	if err != nil {
 		return nil, "", fmt.Errorf("provisioning sandbox: %w", err)
@@ -82,7 +92,7 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	defer cancel()
 
 	// 3. Restore, timed. Restore failure is a drill result, not an execution error.
-	res, restoreErr := postgres.Restore(ctx, sb, backup.Path)
+	res, restoreErr := driver.Restore(ctx, sb, backup.Path)
 	if res != nil {
 		e.Measured.RestoreSeconds = res.Duration.Seconds()
 	}
@@ -98,16 +108,17 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	// 4. Verify.
 	var db *sql.DB
 	if restoreErr == nil {
-		db, err = sql.Open("pgx", sb.DSN())
+		db, err = sql.Open(driver.SQLDriver(), driver.DSN(sb))
 		if err != nil {
 			return nil, "", fmt.Errorf("connecting to sandbox: %w", err)
 		}
 		defer func() { _ = db.Close() }()
 	}
 	e.Checks = verify.Run(ctx, db, d.Spec.Verify, verify.Context{
-		RestoreErr: restoreErr,
-		BackupAge:  backupAge,
-		RTO:        d.Spec.Objectives.RTO.Duration,
+		RestoreErr:    restoreErr,
+		BackupAge:     backupAge,
+		RTO:           d.Spec.Objectives.RTO.Duration,
+		ChecksumQuery: driver.ChecksumQuery,
 	})
 	if p != nil {
 		for _, r := range e.Checks {
