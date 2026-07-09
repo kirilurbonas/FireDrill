@@ -1,0 +1,7 @@
+/bin/
+/evidence/
+/dist/
+*.dump
+*.test
+coverage.out
+.DS_Store

@@ -1,0 +1,227 @@
+// Package spec defines the RecoveryDrill document and its YAML loader.
+package spec
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	APIVersion = "firedrill.dev/v1"
+	Kind       = "RecoveryDrill"
+)
+
+// Drill is a parsed, validated RecoveryDrill document.
+type Drill struct {
+	APIVersion string   `yaml:"apiVersion"`
+	Kind       string   `yaml:"kind"`
+	Metadata   Metadata `yaml:"metadata"`
+	Spec       Spec     `yaml:"spec"`
+}
+
+type Metadata struct {
+	Name string `yaml:"name"`
+}
+
+type Spec struct {
+	Schedule   string     `yaml:"schedule,omitempty"` // used by the operator (v0.3); ignored by the CLI
+	Objectives Objectives `yaml:"objectives"`
+	Source     Source     `yaml:"source"`
+	Sandbox    Sandbox    `yaml:"sandbox"`
+	Verify     []Check    `yaml:"verify"`
+	Report     Report     `yaml:"report"`
+}
+
+type Objectives struct {
+	RTO Duration `yaml:"rto"` // restore must complete within this
+	RPO Duration `yaml:"rpo"` // backup must be younger than this
+}
+
+type Source struct {
+	Driver string `yaml:"driver"` // postgres
+	From   From   `yaml:"from"`
+}
+
+type From struct {
+	Type string `yaml:"type"` // file | s3
+	URI  string `yaml:"uri"`  // path or s3://bucket/key
+	// CredentialsRef names an external credential source (env profile, secret).
+	// Credentials are never inlined in the spec.
+	CredentialsRef string `yaml:"credentialsRef,omitempty"`
+	Region         string `yaml:"region,omitempty"`
+}
+
+type Sandbox struct {
+	Provider string   `yaml:"provider"` // docker
+	Image    string   `yaml:"image"`
+	TTL      Duration `yaml:"ttl"` // hard teardown guardrail
+}
+
+// Check is a single verification step. Exactly one field must be set.
+type Check struct {
+	RestoreSucceeded *struct{}       `yaml:"restoreSucceeded,omitempty"`
+	Freshness        *FreshnessCheck `yaml:"freshness,omitempty"`
+	RowCount         *RowCountCheck  `yaml:"rowCount,omitempty"`
+	Checksum         *ChecksumCheck  `yaml:"checksum,omitempty"`
+	Smoke            *SmokeCheck     `yaml:"smoke,omitempty"`
+}
+
+type FreshnessCheck struct {
+	MaxAge Duration `yaml:"maxAge"`
+}
+
+type RowCountCheck struct {
+	Query string `yaml:"query"`
+	Min   int64  `yaml:"min"`
+}
+
+type ChecksumCheck struct {
+	Table  string `yaml:"table"`
+	Column string `yaml:"column"`
+	// Expect pins the checksum to a known value; empty means record-only.
+	Expect string `yaml:"expect,omitempty"`
+}
+
+type SmokeCheck struct {
+	SQL        string `yaml:"sql"`
+	ExpectRows string `yaml:"expectRows,omitempty"` // e.g. ">=1", "==0"; default ">=1"
+}
+
+type Report struct {
+	Sign     bool     `yaml:"sign"`
+	Controls []string `yaml:"controls,omitempty"`
+	Dir      string   `yaml:"dir,omitempty"` // default ./evidence
+}
+
+// Duration wraps time.Duration with YAML parsing for values like "15m".
+type Duration struct{ time.Duration }
+
+func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
+	var s string
+	if err := node.Decode(&s); err != nil {
+		return err
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	*d = Duration{v}
+	return nil
+}
+
+func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
+
+// Load reads, decodes (strictly) and validates a drill file.
+func Load(path string) (*Drill, error) {
+	f, err := os.Open(path) // #nosec G304 -- user-supplied spec path is the CLI's input
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return Parse(f)
+}
+
+// Parse decodes a drill document from r with unknown fields rejected.
+func Parse(r io.Reader) (*Drill, error) {
+	dec := yaml.NewDecoder(r)
+	dec.KnownFields(true)
+	var d Drill
+	if err := dec.Decode(&d); err != nil {
+		return nil, fmt.Errorf("parsing drill spec: %w", err)
+	}
+	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// Validate checks structural invariants of the drill.
+func (d *Drill) Validate() error {
+	var errs []error
+	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
+
+	if d.APIVersion != APIVersion {
+		add("apiVersion must be %q, got %q", APIVersion, d.APIVersion)
+	}
+	if d.Kind != Kind {
+		add("kind must be %q, got %q", Kind, d.Kind)
+	}
+	if d.Metadata.Name == "" {
+		add("metadata.name is required")
+	}
+	if d.Spec.Source.Driver != "postgres" {
+		add("spec.source.driver: unsupported driver %q (supported: postgres)", d.Spec.Source.Driver)
+	}
+	switch d.Spec.Source.From.Type {
+	case "file", "s3":
+	default:
+		add("spec.source.from.type must be file or s3, got %q", d.Spec.Source.From.Type)
+	}
+	if d.Spec.Source.From.URI == "" {
+		add("spec.source.from.uri is required")
+	}
+	if d.Spec.Sandbox.Provider != "docker" {
+		add("spec.sandbox.provider: unsupported provider %q (supported: docker)", d.Spec.Sandbox.Provider)
+	}
+	if d.Spec.Sandbox.Image == "" {
+		add("spec.sandbox.image is required")
+	}
+	if d.Spec.Sandbox.TTL.Duration <= 0 {
+		add("spec.sandbox.ttl must be > 0 (hard teardown guardrail)")
+	}
+	if d.Spec.Objectives.RTO.Duration <= 0 {
+		add("spec.objectives.rto must be > 0")
+	}
+	if d.Spec.Objectives.RPO.Duration <= 0 {
+		add("spec.objectives.rpo must be > 0")
+	}
+	if len(d.Spec.Verify) == 0 {
+		add("spec.verify must contain at least one check")
+	}
+	for i, c := range d.Spec.Verify {
+		if err := c.validate(); err != nil {
+			add("spec.verify[%d]: %w", i, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (c *Check) validate() error {
+	n := 0
+	if c.RestoreSucceeded != nil {
+		n++
+	}
+	if c.Freshness != nil {
+		n++
+		if c.Freshness.MaxAge.Duration <= 0 {
+			return errors.New("freshness.maxAge must be > 0")
+		}
+	}
+	if c.RowCount != nil {
+		n++
+		if c.RowCount.Query == "" {
+			return errors.New("rowCount.query is required")
+		}
+	}
+	if c.Checksum != nil {
+		n++
+		if c.Checksum.Table == "" || c.Checksum.Column == "" {
+			return errors.New("checksum requires table and column")
+		}
+	}
+	if c.Smoke != nil {
+		n++
+		if c.Smoke.SQL == "" {
+			return errors.New("smoke.sql is required")
+		}
+	}
+	if n != 1 {
+		return fmt.Errorf("exactly one check type must be set, got %d", n)
+	}
+	return nil
+}

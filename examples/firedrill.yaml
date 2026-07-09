@@ -1,0 +1,27 @@
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata:
+  name: payments-db
+spec:
+  objectives:
+    rto: 15m        # restore must complete within 15 minutes
+    rpo: 24h        # backup must be younger than 24 hours
+  source:
+    driver: postgres
+    from:
+      type: file
+      uri: ./examples/demo.dump
+      # For S3: { type: s3, uri: s3://acme-backups/payments/latest.dump, credentialsRef: backup-ro, region: eu-west-1 }
+  sandbox:
+    provider: docker
+    image: postgres:16.6
+    ttl: 30m        # hard teardown guardrail
+  verify:
+    - restoreSucceeded: {}
+    - freshness: { maxAge: 24h }
+    - rowCount:  { query: "select count(*) from ledger", min: 100000 }
+    - checksum:  { table: ledger, column: id }
+    - smoke:     { sql: "select 1 from accounts where status='active' limit 1", expectRows: ">=1" }
+  report:
+    sign: true
+    controls: [ISO27001-A.8.13, SOC2-A1.2]
