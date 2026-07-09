@@ -61,6 +61,17 @@ Auditors can verify with `--public-key ~/.config/firedrill/firedrill.pub` to add
 
 With `report.html: true`, a self-contained HTML report (`<evidence>.html`) is written next to the JSON — shareable with anyone who won't read JSON.
 
+## Compliance-control export
+
+Drills declare which controls they evidence (`report.controls: [ISO27001-A.8.13, SOC2-A1.2]`). `firedrill controls` aggregates an evidence directory into an auditor-ready matrix — per control: every run, its result, measured restore time, RTO/RPO status, and whether the evidence signature validates:
+
+```sh
+firedrill controls                          # markdown to stdout
+firedrill controls --format json -o controls.json
+```
+
+Hand the markdown (or JSON) straight to your GRC team at audit time instead of screenshots and a Confluence page.
+
 ## Kubernetes
 
 Two levels of Kubernetes support:
@@ -143,7 +154,7 @@ CI runs all of it — lint (with e2e files), `govulncheck`, unit tests, and the 
 
 ## Roadmap
 
-Next up: Velero driver, cloud sandboxes (Terraform/RDS), sigstore/cosign attestations, compliance-control export. See [firedrill-plan.md](firedrill-plan.md).
+Next up: Velero driver, cloud sandboxes (Terraform/RDS), sigstore/cosign attestations. See [firedrill-plan.md](firedrill-plan.md).
 
 ## License
 

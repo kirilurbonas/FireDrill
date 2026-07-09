@@ -31,7 +31,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), operatorCmd())
+	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), controlsCmd(), operatorCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(exitError)
@@ -89,6 +89,41 @@ func runCmd() *cobra.Command {
 	cmd.Flags().StringVar(&keyDir, "key-dir", "", "signing key directory (default ~/.config/firedrill)")
 	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable colored output")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the plan without touching Docker")
+	return cmd
+}
+
+func controlsCmd() *cobra.Command {
+	var evidenceDir, format, outPath string
+	cmd := &cobra.Command{
+		Use:   "controls",
+		Short: "Export recovery-testing evidence grouped by compliance control",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rep, err := report.BuildControlReport(evidenceDir)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if outPath != "" {
+				f, err := os.Create(outPath) // #nosec G304 -- user-designated output path
+				if err != nil {
+					return err
+				}
+				defer func() { _ = f.Close() }()
+				out = f
+			}
+			switch format {
+			case "markdown", "md":
+				return rep.WriteMarkdown(out)
+			case "json":
+				return rep.WriteJSON(out)
+			default:
+				return fmt.Errorf("unsupported format %q (markdown|json)", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&evidenceDir, "evidence-dir", "evidence", "directory of evidence JSON files")
+	cmd.Flags().StringVar(&format, "format", "markdown", "output format: markdown | json")
+	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write to file instead of stdout")
 	return cmd
 }
 
