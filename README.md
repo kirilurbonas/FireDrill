@@ -78,7 +78,7 @@ kubectl get drills -n firedrill-system     # NAME  PHASE  VERIFIED  LAST RUN  SC
 
 The CR's `spec:` block is exactly the `firedrill.yaml` spec — the operator validates and runs it with the same code as the CLI, and records the outcome (`phase`, `verified`, measured RTO/RPO) in `.status`.
 
-No operator image is published yet — build your own with `docker build -t <registry>/firedrill:v0.3.0 .` (see [Dockerfile](Dockerfile)) and point `deploy/operator.yaml` at it.
+The operator image is published to `ghcr.io/kirilurbonas/firedrill` (multi-arch) by the release workflow — `deploy/operator.yaml` uses it out of the box; pin a version tag in production.
 
 ## Metrics
 
@@ -92,6 +92,20 @@ report:
 ```
 
 Exported (per drill): `firedrill_drill_verified`, `firedrill_restore_duration_seconds` (measured RTO), `firedrill_backup_age_seconds` (RPO), `firedrill_rto_met`, `firedrill_rpo_met`, `firedrill_check_passed{check=…}`, `firedrill_drill_timestamp_seconds`. Alert on `firedrill_drill_verified == 0` or a rising `restore_duration` trend. Sink failures are warnings — they never fail a drill.
+
+A ready-made Grafana dashboard (verification history, RTO/RPO trends, time-since-last-drill) ships at [deploy/grafana-dashboard.json](deploy/grafana-dashboard.json) — import it and point it at your Prometheus datasource.
+
+## Slack notifications
+
+Add a `slack` sink to get drill outcomes in a channel. The webhook URL is read from an environment variable — it never appears in the spec:
+
+```yaml
+report:
+  sinks:
+    - { type: slack, webhookEnv: SLACK_WEBHOOK_URL, onlyFailures: true }
+```
+
+`onlyFailures: true` keeps the channel quiet until a drill actually fails — usually what you want for the 3 a.m. pager channel.
 
 ## Guardrails
 
@@ -129,7 +143,7 @@ CI runs all of it — lint (with e2e files), `govulncheck`, unit tests, and the 
 
 ## Roadmap
 
-v0.4 Slack notifications, Velero driver, cloud sandboxes (Terraform/RDS), sigstore/cosign attestations, compliance-control export, Grafana dashboard. See [firedrill-plan.md](firedrill-plan.md).
+Next up: Velero driver, cloud sandboxes (Terraform/RDS), sigstore/cosign attestations, compliance-control export. See [firedrill-plan.md](firedrill-plan.md).
 
 ## License
 

@@ -16,6 +16,7 @@ import (
 	_ "github.com/kirilurbonas/FireDrill/pkg/drivers/mysql"    // register mysql
 	_ "github.com/kirilurbonas/FireDrill/pkg/drivers/postgres" // register postgres
 	"github.com/kirilurbonas/FireDrill/pkg/metrics"
+	"github.com/kirilurbonas/FireDrill/pkg/notify"
 	"github.com/kirilurbonas/FireDrill/pkg/report"
 	"github.com/kirilurbonas/FireDrill/pkg/sandbox"
 	sbdocker "github.com/kirilurbonas/FireDrill/pkg/sandbox/docker"
@@ -199,7 +200,18 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	}
 
 	// 7. Sinks — failures are warnings, never drill failures.
-	for _, serr := range metrics.Export(e, d.Spec.Report.Sinks) {
+	var metricSinks []spec.Sink
+	for _, s := range d.Spec.Report.Sinks {
+		switch s.Type {
+		case "slack":
+			if serr := notify.Slack(ctx, e, s); serr != nil && p != nil {
+				p.Info("warning: %v", serr)
+			}
+		default:
+			metricSinks = append(metricSinks, s)
+		}
+	}
+	for _, serr := range metrics.Export(e, metricSinks) {
 		if p != nil {
 			p.Info("warning: metrics %v", serr)
 		}

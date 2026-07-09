@@ -69,7 +69,7 @@ spec:
       serviceAccountName: firedrill-operator
       containers:
         - name: operator
-          image: ghcr.io/kirilurbonas/firedrill:latest  # or your build
+          image: ghcr.io/kirilurbonas/firedrill:latest  # published by the release workflow; pin a version tag in production
           args: [operator]
           ports:
             - { containerPort: 8080, name: metrics }
