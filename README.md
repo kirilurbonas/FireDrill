@@ -40,7 +40,7 @@ Exit codes: `0` recovery verified · `1` drill ran but recovery not verified · 
 ## How it works
 
 1. **Declare** recovery targets in `firedrill.yaml` — source backup, restore method, RTO/RPO objectives, checks.
-2. **Provision** a throwaway Docker sandbox: own bridge network, loopback-only port, random one-off credentials, hard TTL.
+2. **Provision** a throwaway sandbox — a Docker container (own bridge network, loopback-only port) or a Kubernetes pod (dedicated namespace, deny-all-egress NetworkPolicy) — with random one-off credentials and a hard TTL.
 3. **Restore** the latest backup into it (local file or `s3://…`), timed — that's your *measured* RTO.
 4. **Verify** — restore succeeded, freshness vs RPO, row counts, order-independent checksums, custom smoke SQL.
 5. **Report** — a JSON evidence record signed with ed25519, mapped to compliance controls (`ISO27001-A.8.13`, `SOC2-A1.2`, …).
@@ -78,6 +78,8 @@ kubectl get drills -n firedrill-system     # NAME  PHASE  VERIFIED  LAST RUN  SC
 
 The CR's `spec:` block is exactly the `firedrill.yaml` spec — the operator validates and runs it with the same code as the CLI, and records the outcome (`phase`, `verified`, measured RTO/RPO) in `.status`.
 
+No operator image is published yet — build your own with `docker build -t <registry>/firedrill:v0.3.0 .` (see [Dockerfile](Dockerfile)) and point `deploy/operator.yaml` at it.
+
 ## Metrics
 
 Drill results export as Prometheus metrics via `report.sinks`:
@@ -95,11 +97,14 @@ Exported (per drill): `firedrill_drill_verified`, `firedrill_restore_duration_se
 
 | Risk | Mitigation |
 |---|---|
-| Accidentally touching production | Sandbox on its own network, published to `127.0.0.1` only; sources are read-only (FireDrill only downloads) |
-| Sandbox left running | Deferred destroy on every code path **and** a TTL watchdog that force-removes the container past the deadline |
+| Accidentally touching production | Docker: own network, published to `127.0.0.1` only. Kubernetes: deny-all-egress NetworkPolicy. Sources are read-only (FireDrill only downloads) |
+| Sandbox left running | Deferred destroy on every code path **and** a TTL watchdog that force-removes the container/pod past the deadline |
 | "Restore ran" ≠ "data is back" | Data-level checks: row counts, checksums, user smoke SQL — not just exit codes |
 | Secrets leaking into evidence | Credentials referenced by name (`credentialsRef` → AWS profile), never inlined or persisted |
 | Corrupt/garbage backups passing | A failed restore fails the drill; dependent checks report `SKIP`, never false `PASS` |
+| Secrets in process lists | Database passwords reach in-sandbox tooling via environment, never argv |
+
+See [SECURITY.md](SECURITY.md) for the full security model and how to report vulnerabilities.
 
 ## How is this different from …?
 
@@ -116,9 +121,11 @@ A backup that has never been restored is just hope stored on disk. FireDrill tur
 
 ```sh
 make test    # unit tests
-make e2e     # full drill loop against real Docker (also runs in CI)
+make e2e     # full drill loops against real Docker + a Kubernetes cluster (kind); k8s tests skip if no cluster is reachable
 make lint    # golangci-lint (incl. gosec)
 ```
+
+CI runs all of it — lint (with e2e files), `govulncheck`, unit tests, and the Docker/Kubernetes/operator e2e suites against a kind cluster. Dependabot keeps dependencies current.
 
 ## Roadmap
 

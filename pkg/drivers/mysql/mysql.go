@@ -32,12 +32,21 @@ func (Driver) ContainerEnv(user, password, db string) []string {
 // ReadyCmds: mysqladmin ping can succeed while the entrypoint's temporary
 // init server is up, so a real query against the drill database confirms
 // the final server is serving.
-func (Driver) ReadyCmds(user, password, db string) [][]string {
-	auth := []string{"-u" + user, "-p" + password}
+//
+// The password is never placed in argv (visible in the container's process
+// list): commands run under sh and read MYSQL_PWD from MYSQL_PASSWORD,
+// which the container entrypoint already holds in its environment.
+func (Driver) ReadyCmds(user, _, db string) [][]string {
 	return [][]string{
-		append([]string{"mysqladmin", "ping", "--silent"}, auth...),
-		append([]string{"mysql", db, "-e", "select 1"}, auth...),
+		shellWithPwd(fmt.Sprintf(`mysqladmin ping --silent -u%s`, user)),
+		shellWithPwd(fmt.Sprintf(`mysql -u%s %s -e 'select 1'`, user, db)),
 	}
+}
+
+// shellWithPwd wraps a mysql-family command so the password comes from the
+// container's own MYSQL_PASSWORD env var, not from command-line arguments.
+func shellWithPwd(cmd string) []string {
+	return []string{"sh", "-c", `export MYSQL_PWD="$MYSQL_PASSWORD"; exec ` + cmd}
 }
 
 func (Driver) SQLDriver() string { return "mysql" }
@@ -63,7 +72,7 @@ func (Driver) Restore(ctx context.Context, sb drivers.Sandbox, path string) (*dr
 	}
 	defer func() { _ = f.Close() }()
 
-	cmd := []string{"mysql", "-u" + sb.User(), "-p" + sb.Password(), sb.DB()}
+	cmd := shellWithPwd(fmt.Sprintf("mysql -u%s %s", sb.User(), sb.DB()))
 	start := time.Now()
 	code, out, err := sb.Exec(ctx, cmd, f)
 	elapsed := time.Since(start)

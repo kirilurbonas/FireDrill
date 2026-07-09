@@ -23,6 +23,9 @@ rules:
     resources: [recoverydrills/status]
     verbs: [get, update, patch]
   # Sandboxes: pods in the sandbox namespace(s), plus namespace/networkpolicy bootstrap.
+  # NOTE: these pod permissions are cluster-wide because drills may set any
+  # sandbox.namespace. To least-privilege this, replace the ClusterRoleBinding
+  # with RoleBindings in the specific namespaces your drills use.
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch, create, delete]

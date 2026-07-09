@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
+	"net/netip"
+
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 
 	"github.com/kirilurbonas/FireDrill/pkg/drivers"
 	"github.com/kirilurbonas/FireDrill/pkg/sandbox"
@@ -52,11 +52,11 @@ var (
 // Provision pulls the image, creates an isolated network + container, waits
 // until the engine accepts connections, and arms the TTL watchdog.
 func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to docker: %w", err)
 	}
-	if _, err := cli.Ping(ctx); err != nil {
+	if _, err := cli.Ping(ctx, client.PingOptions{}); err != nil {
 		return nil, fmt.Errorf("cannot reach the Docker daemon — is Docker running? (%w)", err)
 	}
 
@@ -66,7 +66,7 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 
 	// Dedicated bridge network: the sandbox cannot be reached from (or
 	// confused with) anything else on the default bridge.
-	nw, err := cli.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge"})
+	nw, err := cli.NetworkCreate(ctx, name, client.NetworkCreateOptions{Driver: "bridge"})
 	if err != nil {
 		return nil, fmt.Errorf("creating sandbox network: %w", err)
 	}
@@ -78,34 +78,41 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		}
 	}()
 
-	rc, err := cli.ImagePull(ctx, cfg.Image, image.PullOptions{})
+	pull, err := cli.ImagePull(ctx, cfg.Image, client.ImagePullOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("pulling %s: %w", cfg.Image, err)
 	}
-	_, _ = io.Copy(io.Discard, rc)
-	_ = rc.Close()
+	if err := pull.Wait(ctx); err != nil {
+		_ = pull.Close()
+		return nil, fmt.Errorf("pulling %s: %w", cfg.Image, err)
+	}
+	_ = pull.Close()
 
-	enginePort := nat.Port(cfg.Driver.Port())
-	created, err := cli.ContainerCreate(ctx,
-		&container.Config{
+	enginePort, err := network.ParsePort(cfg.Driver.Port())
+	if err != nil {
+		return nil, fmt.Errorf("driver port: %w", err)
+	}
+	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Name: name,
+		Config: &container.Config{
 			Image:        cfg.Image,
 			Env:          cfg.Driver.ContainerEnv(dbUser, password, dbName),
 			Labels:       map[string]string{"firedrill": "sandbox", "firedrill/drill": cfg.Name},
-			ExposedPorts: nat.PortSet{enginePort: struct{}{}},
+			ExposedPorts: network.PortSet{enginePort: struct{}{}},
 		},
-		&container.HostConfig{
+		HostConfig: &container.HostConfig{
 			// Loopback only: the sandbox is never exposed beyond this host.
-			PortBindings: nat.PortMap{enginePort: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: ""}}},
+			PortBindings: network.PortMap{enginePort: []network.PortBinding{{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: ""}}},
 			AutoRemove:   false,
 			NetworkMode:  container.NetworkMode(nw.ID),
 		},
-		nil, nil, name)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("creating sandbox container: %w", err)
 	}
 	sb.ContainerID = created.ID
 
-	if err := cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		return nil, fmt.Errorf("starting sandbox: %w", err)
 	}
 
@@ -113,11 +120,14 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		return nil, err
 	}
 
-	insp, err := cli.ContainerInspect(ctx, created.ID)
+	insp, err := cli.ContainerInspect(ctx, created.ID, client.ContainerInspectOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("inspecting sandbox: %w", err)
 	}
-	bindings := insp.NetworkSettings.Ports[enginePort]
+	if insp.Container.NetworkSettings == nil {
+		return nil, fmt.Errorf("sandbox has no network settings")
+	}
+	bindings := insp.Container.NetworkSettings.Ports[enginePort]
 	if len(bindings) == 0 {
 		return nil, fmt.Errorf("sandbox has no published port")
 	}
@@ -164,7 +174,7 @@ func (s *Sandbox) waitReady(ctx context.Context, cmds [][]string) error {
 // Exec runs a command inside the sandbox container and returns its exit
 // code and combined output. stdin, when non-nil, is streamed to the command.
 func (s *Sandbox) Exec(ctx context.Context, cmd []string, stdin io.Reader) (int, string, error) {
-	created, err := s.cli.ContainerExecCreate(ctx, s.ContainerID, container.ExecOptions{
+	created, err := s.cli.ExecCreate(ctx, s.ContainerID, client.ExecCreateOptions{
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -173,7 +183,7 @@ func (s *Sandbox) Exec(ctx context.Context, cmd []string, stdin io.Reader) (int,
 	if err != nil {
 		return -1, "", fmt.Errorf("exec create: %w", err)
 	}
-	att, err := s.cli.ContainerExecAttach(ctx, created.ID, container.ExecAttachOptions{})
+	att, err := s.cli.ExecAttach(ctx, created.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return -1, "", fmt.Errorf("exec attach: %w", err)
 	}
@@ -186,7 +196,7 @@ func (s *Sandbox) Exec(ctx context.Context, cmd []string, stdin io.Reader) (int,
 		}()
 	}
 	out, _ := io.ReadAll(att.Reader) // multiplexed stream; fine for diagnostics
-	insp, err := s.cli.ContainerExecInspect(ctx, created.ID)
+	insp, err := s.cli.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
 	if err != nil {
 		return -1, string(out), fmt.Errorf("exec inspect: %w", err)
 	}
@@ -208,12 +218,12 @@ func (s *Sandbox) Destroy(ctx context.Context) error {
 			s.ttlCancel()
 		}
 		if s.ContainerID != "" {
-			if err := s.cli.ContainerRemove(ctx, s.ContainerID, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+			if _, err := s.cli.ContainerRemove(ctx, s.ContainerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
 				s.destroyErr = fmt.Errorf("removing container: %w", err)
 			}
 		}
 		if s.networkID != "" {
-			if err := s.cli.NetworkRemove(ctx, s.networkID); err != nil && s.destroyErr == nil {
+			if _, err := s.cli.NetworkRemove(ctx, s.networkID, client.NetworkRemoveOptions{}); err != nil && s.destroyErr == nil {
 				s.destroyErr = fmt.Errorf("removing network: %w", err)
 			}
 		}

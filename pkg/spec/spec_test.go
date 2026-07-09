@@ -58,6 +58,8 @@ func TestParseErrors(t *testing.T) {
 		"bad duration":   strings.Replace(valid, "rto: 15m", "rto: soon", 1),
 		"two check keys": strings.Replace(valid, "- freshness:", "  freshness2: 1\n    - freshness:", 1),
 		"empty smoke":    strings.Replace(valid, `sql: "select 1"`, `sql: ""`, 1),
+		"unsafe name":    strings.Replace(valid, "name: payments-db", "name: ../../etc/passwd", 1),
+		"uppercase name": strings.Replace(valid, "name: payments-db", "name: PaymentsDB", 1),
 	}
 	for name, doc := range cases {
 		if _, err := Parse(strings.NewReader(doc)); err == nil {

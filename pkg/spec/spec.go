@@ -6,10 +6,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// nameRe: drill names appear in evidence filenames, container names and pod
+// names, so they must be safe lowercase DNS labels.
+var nameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 const (
 	APIVersion = "firedrill.dev/v1"
@@ -162,8 +167,8 @@ func (d *Drill) Validate() error {
 	if d.Kind != Kind {
 		add("kind must be %q, got %q", Kind, d.Kind)
 	}
-	if d.Metadata.Name == "" {
-		add("metadata.name is required")
+	if !nameRe.MatchString(d.Metadata.Name) {
+		add("metadata.name %q must be a lowercase DNS label (a-z, 0-9, '-'; max 63 chars) — it is used in file, container and pod names", d.Metadata.Name)
 	}
 	switch d.Spec.Source.Driver {
 	case "postgres", "mysql":
