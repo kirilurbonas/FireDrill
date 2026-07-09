@@ -36,6 +36,12 @@ func TestE2EOperator(t *testing.T) {
 	if out, err := exec.Command("kubectl", "apply", "-f", filepath.Join(repoRoot, "deploy/crd.yaml")).CombinedOutput(); err != nil {
 		t.Fatalf("applying crd: %v (%s)", err, string(out))
 	}
+	// The CRD must be Established before CRs of its kind can be created;
+	// creating immediately after apply races discovery.
+	if out, err := exec.Command("kubectl", "wait", "--for=condition=Established",
+		"crd/recoverydrills.firedrill.dev", "--timeout=60s").CombinedOutput(); err != nil {
+		t.Fatalf("waiting for crd: %v (%s)", err, string(out))
+	}
 
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "demo.sql")
