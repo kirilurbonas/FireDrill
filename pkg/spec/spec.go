@@ -53,12 +53,15 @@ type Source struct {
 }
 
 type From struct {
-	Type string `yaml:"type"` // file | s3
-	URI  string `yaml:"uri"`  // path or s3://bucket/key
+	Type string `yaml:"type"`          // file | s3 | velero
+	URI  string `yaml:"uri,omitempty"` // path or s3://bucket/key (file/s3)
 	// CredentialsRef names an external credential source (env profile, secret).
 	// Credentials are never inlined in the spec.
 	CredentialsRef string `yaml:"credentialsRef,omitempty"`
 	Region         string `yaml:"region,omitempty"`
+	// Velero sources (driver: velero):
+	Backup    string `yaml:"backup,omitempty"`    // Velero Backup CR name
+	Namespace string `yaml:"namespace,omitempty"` // source namespace the backup covers
 }
 
 type Sandbox struct {
@@ -72,9 +75,13 @@ type Sandbox struct {
 type Check struct {
 	RestoreSucceeded *struct{}       `yaml:"restoreSucceeded,omitempty"`
 	Freshness        *FreshnessCheck `yaml:"freshness,omitempty"`
-	RowCount         *RowCountCheck  `yaml:"rowCount,omitempty"`
-	Checksum         *ChecksumCheck  `yaml:"checksum,omitempty"`
-	Smoke            *SmokeCheck     `yaml:"smoke,omitempty"`
+	// SQL checks (engine drivers: postgres, mysql):
+	RowCount *RowCountCheck `yaml:"rowCount,omitempty"`
+	Checksum *ChecksumCheck `yaml:"checksum,omitempty"`
+	Smoke    *SmokeCheck    `yaml:"smoke,omitempty"`
+	// Kubernetes checks (velero driver):
+	PodsReady     *PodsReadyCheck     `yaml:"podsReady,omitempty"`
+	ResourceCount *ResourceCountCheck `yaml:"resourceCount,omitempty"`
 }
 
 type FreshnessCheck struct {
@@ -91,6 +98,15 @@ type ChecksumCheck struct {
 	Column string `yaml:"column"`
 	// Expect pins the checksum to a known value; empty means record-only.
 	Expect string `yaml:"expect,omitempty"`
+}
+
+type PodsReadyCheck struct {
+	Timeout Duration `yaml:"timeout"` // how long pods get to become Ready
+}
+
+type ResourceCountCheck struct {
+	Kind string `yaml:"kind"` // deployments | statefulsets | services | configmaps | secrets | pods
+	Min  int    `yaml:"min"`
 }
 
 type SmokeCheck struct {
@@ -175,25 +191,42 @@ func (d *Drill) Validate() error {
 	if !nameRe.MatchString(d.Metadata.Name) {
 		add("metadata.name %q must be a lowercase DNS label (a-z, 0-9, '-'; max 63 chars) — it is used in file, container and pod names", d.Metadata.Name)
 	}
+	velero := d.Spec.Source.Driver == "velero"
 	switch d.Spec.Source.Driver {
-	case "postgres", "mysql":
+	case "postgres", "mysql", "velero":
 	default:
-		add("spec.source.driver: unsupported driver %q (supported: postgres, mysql)", d.Spec.Source.Driver)
+		add("spec.source.driver: unsupported driver %q (supported: postgres, mysql, velero)", d.Spec.Source.Driver)
 	}
 	switch d.Spec.Source.From.Type {
 	case "file", "s3":
+		if velero {
+			add("spec.source.from.type must be velero when driver is velero")
+		}
+		if d.Spec.Source.From.URI == "" {
+			add("spec.source.from.uri is required")
+		}
+	case "velero":
+		if !velero {
+			add("spec.source.from.type velero requires driver: velero")
+		}
+		if d.Spec.Source.From.Backup == "" {
+			add("spec.source.from.backup (Velero Backup name) is required")
+		}
+		if d.Spec.Source.From.Namespace == "" {
+			add("spec.source.from.namespace (source namespace) is required")
+		}
 	default:
-		add("spec.source.from.type must be file or s3, got %q", d.Spec.Source.From.Type)
-	}
-	if d.Spec.Source.From.URI == "" {
-		add("spec.source.from.uri is required")
+		add("spec.source.from.type must be file, s3 or velero, got %q", d.Spec.Source.From.Type)
 	}
 	switch d.Spec.Sandbox.Provider {
 	case "docker", "kubernetes":
+		if velero && d.Spec.Sandbox.Provider != "kubernetes" {
+			add("spec.sandbox.provider must be kubernetes for velero drills")
+		}
 	default:
 		add("spec.sandbox.provider: unsupported provider %q (supported: docker, kubernetes)", d.Spec.Sandbox.Provider)
 	}
-	if d.Spec.Sandbox.Image == "" {
+	if d.Spec.Sandbox.Image == "" && !velero {
 		add("spec.sandbox.image is required")
 	}
 	if d.Spec.Sandbox.TTL.Duration <= 0 {
@@ -211,6 +244,12 @@ func (d *Drill) Validate() error {
 	for i, c := range d.Spec.Verify {
 		if err := c.validate(); err != nil {
 			add("spec.verify[%d]: %w", i, err)
+		}
+		if velero && c.isSQL() {
+			add("spec.verify[%d]: SQL checks are not valid for velero drills (use podsReady/resourceCount)", i)
+		}
+		if !velero && c.isK8s() {
+			add("spec.verify[%d]: kubernetes checks are only valid for velero drills", i)
 		}
 	}
 	for i, s := range d.Spec.Report.Sinks {
@@ -263,8 +302,30 @@ func (c *Check) validate() error {
 			return errors.New("smoke.sql is required")
 		}
 	}
+	if c.PodsReady != nil {
+		n++
+		if c.PodsReady.Timeout.Duration <= 0 {
+			return errors.New("podsReady.timeout must be > 0")
+		}
+	}
+	if c.ResourceCount != nil {
+		n++
+		switch c.ResourceCount.Kind {
+		case "deployments", "statefulsets", "services", "configmaps", "secrets", "pods":
+		default:
+			return fmt.Errorf("resourceCount.kind %q unsupported (deployments|statefulsets|services|configmaps|secrets|pods)", c.ResourceCount.Kind)
+		}
+	}
 	if n != 1 {
 		return fmt.Errorf("exactly one check type must be set, got %d", n)
 	}
 	return nil
+}
+
+func (c *Check) isSQL() bool {
+	return c.RowCount != nil || c.Checksum != nil || c.Smoke != nil
+}
+
+func (c *Check) isK8s() bool {
+	return c.PodsReady != nil || c.ResourceCount != nil
 }

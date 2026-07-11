@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-IMAGE=postgres:16.6
+IMAGE=postgres:16.10-alpine
 NAME=firedrill-demo-src
 ROWS="${ROWS:-120000}"
 

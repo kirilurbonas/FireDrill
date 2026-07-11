@@ -8,7 +8,7 @@
 
 FireDrill restores your real backups into a disposable, isolated sandbox, verifies the data actually came back intact, measures the true recovery time, and emits signed, audit-grade evidence — then destroys the sandbox. It answers the question every backup tool quietly dodges: *if today were the disaster, would you actually get your data back — and how long would it take?*
 
-FireDrill **does not back anything up**. It is the verification layer on top of whatever backup you already run (`pg_dump`, `mysqldump`, pgBackRest, RDS snapshots, …): backup-agnostic recovery verification with audit-grade proof. Postgres and MySQL are supported today; the driver interface is built for more.
+FireDrill **does not back anything up**. It is the verification layer on top of whatever backup you already run (`pg_dump`, `mysqldump`, Velero, pgBackRest, RDS snapshots, …): backup-agnostic recovery verification with audit-grade proof. Postgres, MySQL and Velero (Kubernetes namespaces) are supported today; the driver interface is built for more.
 
 ## Demo
 
@@ -91,6 +91,21 @@ The CR's `spec:` block is exactly the `firedrill.yaml` spec — the operator val
 
 The operator image is published to `ghcr.io/kirilurbonas/firedrill` (multi-arch) by the release workflow — `deploy/operator.yaml` uses it out of the box; pin a version tag in production.
 
+**Velero drills** — if your backups are Velero backups, FireDrill can drill whole namespaces: it restores the backup into an **ephemeral namespace** via a Velero `Restore` with `namespaceMapping` (production is never touched), verifies the workloads actually came back, and deletes the namespace:
+
+```yaml
+source:
+  driver: velero
+  from: { type: velero, backup: shop-nightly, namespace: shop }
+sandbox: { provider: kubernetes, ttl: 20m }
+verify:
+  - restoreSucceeded: {}
+  - podsReady: { timeout: 5m }                     # every restored pod reaches Ready
+  - resourceCount: { kind: deployments, min: 1 }   # objects actually came back
+```
+
+Requires Velero installed in the cluster. Try it locally: `examples/velero/setup-velero-kind.sh` stands up Velero + MinIO + a demo backup in a kind cluster, then `firedrill run shop-ns -f examples/firedrill-velero.yaml`.
+
 ## Metrics
 
 Drill results export as Prometheus metrics via `report.sinks`:
@@ -154,7 +169,7 @@ CI runs all of it — lint (with e2e files), `govulncheck`, unit tests, and the 
 
 ## Roadmap
 
-Next up: Velero driver, cloud sandboxes (Terraform/RDS), sigstore/cosign attestations. See [firedrill-plan.md](firedrill-plan.md).
+Next up: cloud sandboxes (Terraform/RDS), sigstore/cosign attestations. See [firedrill-plan.md](firedrill-plan.md).
 
 ## License
 

@@ -1,0 +1,30 @@
+# Velero drill: restore a namespace backup into an ephemeral namespace and
+# verify the workloads came back. Set up a demo environment with
+# examples/velero/setup-velero-kind.sh.
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata:
+  name: shop-ns
+spec:
+  objectives:
+    rto: 10m
+    rpo: 24h
+  source:
+    driver: velero
+    from:
+      type: velero
+      backup: shop-backup     # Velero Backup CR name
+      namespace: shop         # namespace the backup covers
+  sandbox:
+    provider: kubernetes      # restore lands in an ephemeral firedrill-* namespace
+    ttl: 20m
+  verify:
+    - restoreSucceeded: {}
+    - freshness: { maxAge: 24h }
+    - podsReady: { timeout: 5m }
+    - resourceCount: { kind: deployments, min: 1 }
+    - resourceCount: { kind: configmaps, min: 1 }
+    - resourceCount: { kind: secrets, min: 1 }
+  report:
+    sign: false
+    controls: [ISO27001-A.8.13, SOC2-A1.2]

@@ -71,10 +71,13 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		return nil, fmt.Errorf("creating sandbox network: %w", err)
 	}
 
-	sb = &Sandbox{networkID: nw.ID, cli: cli, password: password}
+	// Capture the sandbox in a local for cleanup: `return nil, err` resets
+	// the named return before deferred functions run.
+	s := &Sandbox{networkID: nw.ID, cli: cli, password: password}
+	sb = s
 	defer func() {
 		if err != nil {
-			_ = sb.Destroy(context.Background())
+			_ = s.Destroy(context.Background())
 		}
 	}()
 
@@ -110,13 +113,13 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 	if err != nil {
 		return nil, fmt.Errorf("creating sandbox container: %w", err)
 	}
-	sb.ContainerID = created.ID
+	s.ContainerID = created.ID
 
 	if _, err := cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		return nil, fmt.Errorf("starting sandbox: %w", err)
 	}
 
-	if err := sb.waitReady(ctx, cfg.Driver.ReadyCmds(dbUser, password, dbName)); err != nil {
+	if err := s.waitReady(ctx, cfg.Driver.ReadyCmds(dbUser, password, dbName)); err != nil {
 		return nil, err
 	}
 
@@ -131,16 +134,16 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 	if len(bindings) == 0 {
 		return nil, fmt.Errorf("sandbox has no published port")
 	}
-	sb.hostPort = bindings[0].HostPort
+	s.hostPort = bindings[0].HostPort
 
 	// TTL watchdog: destroy no matter what once the deadline passes.
 	ttlCtx, cancel := context.WithCancel(context.Background())
-	sb.ttlCancel = cancel
+	s.ttlCancel = cancel
 	go func() { // #nosec G118 -- watchdog must outlive the request context to guarantee teardown
 		select {
 		case <-ttlCtx.Done():
 		case <-time.After(cfg.TTL):
-			_ = sb.Destroy(context.Background())
+			_ = s.Destroy(context.Background())
 		}
 	}()
 

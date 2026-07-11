@@ -50,6 +50,12 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	e.Sandbox.Image = d.Spec.Sandbox.Image
 	e.Controls = d.Spec.Report.Controls
 
+	// Velero drills are namespace-scoped: Velero performs the restore into
+	// an ephemeral namespace, so they bypass the engine sandbox machinery.
+	if d.Spec.Source.Driver == "velero" {
+		return runVelero(ctx, d, opts, e)
+	}
+
 	driver, err := drivers.Get(d.Spec.Source.Driver)
 	if err != nil {
 		return nil, "", fmt.Errorf("%w (available: %s)", err, strings.Join(drivers.Names(), ", "))
@@ -146,8 +152,21 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 		}
 	}
 
+	var restoreDur time.Duration
+	if res != nil {
+		restoreDur = res.Duration
+	}
+	return finalize(ctx, d, opts, e, restoreErr, restoreDur, backupAge)
+}
+
+// finalize computes objectives and the verdict, writes + signs the evidence,
+// renders the HTML report, and fans out to sinks. Shared by all drill kinds.
+func finalize(ctx context.Context, d *spec.Drill, opts Options, e *report.Evidence,
+	restoreErr error, restoreDur time.Duration, backupAge time.Duration) (*report.Evidence, string, error) {
+	p := opts.Printer
+
 	// 5. Objectives.
-	e.Measured.RTOMet = restoreErr == nil && res.Duration <= d.Spec.Objectives.RTO.Duration
+	e.Measured.RTOMet = restoreErr == nil && restoreDur <= d.Spec.Objectives.RTO.Duration
 	e.Measured.RPOMet = backupAge <= d.Spec.Objectives.RPO.Duration
 
 	e.Verified = restoreErr == nil && e.Measured.RTOMet && e.Measured.RPOMet

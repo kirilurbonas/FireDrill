@@ -84,7 +84,7 @@ func TestE2EOperator(t *testing.T) {
 				"driver": "postgres",
 				"from":   map[string]any{"type": "file", "uri": dump},
 			},
-			"sandbox": map[string]any{"provider": "kubernetes", "image": "postgres:16.6", "ttl": "10m"},
+			"sandbox": map[string]any{"provider": "kubernetes", "image": "postgres:16.10-alpine", "ttl": "10m"},
 			"verify": []any{
 				map[string]any{"restoreSucceeded": map[string]any{}},
 				map[string]any{"rowCount": map[string]any{"query": "select count(*) from ledger", "min": 3000}},

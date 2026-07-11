@@ -43,7 +43,7 @@ spec:
   source:
     driver: postgres
     from: { type: file, uri: %s }
-  sandbox: { provider: docker, image: "postgres:16.6", ttl: 10m }
+  sandbox: { provider: docker, image: "postgres:16.10-alpine", ttl: 10m }
   verify:
     - restoreSucceeded: {}
     - freshness: { maxAge: 24h }
@@ -175,7 +175,7 @@ spec:
   source:
     driver: postgres
     from: { type: file, uri: %s }
-  sandbox: { provider: kubernetes, image: "postgres:16.6", ttl: 10m }
+  sandbox: { provider: kubernetes, image: "postgres:16.10-alpine", ttl: 10m }
   verify:
     - restoreSucceeded: {}
     - rowCount: { query: "select count(*) from ledger", min: 5000 }
@@ -230,7 +230,7 @@ spec:
   source:
     driver: postgres
     from: { type: file, uri: %s }
-  sandbox: { provider: docker, image: "postgres:16.6", ttl: 10m }
+  sandbox: { provider: docker, image: "postgres:16.10-alpine", ttl: 10m }
   verify:
     - restoreSucceeded: {}
     - rowCount: { query: "select count(*) from ledger", min: 1 }

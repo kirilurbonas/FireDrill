@@ -14,7 +14,7 @@ spec:
       # For S3: { type: s3, uri: s3://acme-backups/payments/latest.dump, credentialsRef: backup-ro, region: eu-west-1 }
   sandbox:
     provider: docker
-    image: postgres:16.6
+    image: postgres:16.10-alpine
     ttl: 30m        # hard teardown guardrail
   verify:
     - restoreSucceeded: {}

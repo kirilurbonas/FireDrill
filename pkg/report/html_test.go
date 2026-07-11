@@ -31,7 +31,7 @@ func TestWriteHTML(t *testing.T) {
 	e.Measured.RTOMet = true
 	e.Backup.URI = "s3://acme/payments.dump"
 	e.Sandbox.Provider = "docker"
-	e.Sandbox.Image = "postgres:16.6"
+	e.Sandbox.Image = "postgres:16.10-alpine"
 	e.Sandbox.Destroyed = true
 
 	jsonPath := filepath.Join(dir, "payments-db-x.json")

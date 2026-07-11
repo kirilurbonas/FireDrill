@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/client-go/kubernetes"
+
 	"github.com/kirilurbonas/FireDrill/pkg/spec"
 )
 
@@ -23,6 +25,10 @@ type Context struct {
 	// ChecksumQuery builds the engine-dialect checksum query. Identifiers
 	// are validated before this is called.
 	ChecksumQuery func(table, column string) string
+	// K8s + Namespace are set for velero drills; K8s checks run against
+	// the restored ephemeral namespace.
+	K8s       kubernetes.Interface
+	Namespace string
 }
 
 // Result is the outcome of one check.
@@ -77,6 +83,12 @@ func runOne(ctx context.Context, db *sql.DB, c spec.Check, dc Context) Result {
 
 	case c.Smoke != nil:
 		return dataCheck(dc, "smoke", func() Result { return smoke(ctx, db, c.Smoke) })
+
+	case c.PodsReady != nil:
+		return dataCheck(dc, "podsReady", func() Result { return podsReady(ctx, dc.K8s, dc.Namespace, c.PodsReady) })
+
+	case c.ResourceCount != nil:
+		return dataCheck(dc, "resourceCount", func() Result { return resourceCount(ctx, dc.K8s, dc.Namespace, c.ResourceCount) })
 	}
 	return Result{Name: "unknown", Passed: false, Detail: "unrecognized check"}
 }

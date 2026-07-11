@@ -45,4 +45,10 @@ jobs:
       - uses: helm/kind-action@v1 # kubernetes sandbox + operator e2e
         with:
           cluster_name: firedrill-ci
+      - name: Install velero CLI
+        run: |
+          curl -sL https://github.com/vmware-tanzu/velero/releases/download/v1.18.2/velero-v1.18.2-linux-amd64.tar.gz \
+            | tar xz && sudo mv velero-v1.18.2-linux-amd64/velero /usr/local/bin/
+      - name: Set up Velero + demo backup (for the velero e2e)
+        run: ./examples/velero/setup-velero-kind.sh
       - run: make e2e

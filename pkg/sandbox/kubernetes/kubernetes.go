@@ -69,7 +69,7 @@ var (
 // Provision creates the namespace (if needed), a deny-egress NetworkPolicy,
 // and the sandbox pod; waits for the engine to accept work; and arms the TTL.
 func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error) {
-	restCfg, inCluster, err := loadConfig()
+	restCfg, inCluster, err := LoadConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -84,17 +84,20 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 	}
 	password := randomHex(16)
 	podName := fmt.Sprintf("firedrill-%s-%s", sanitize(cfg.Name), randomHex(4))
-	sb = &Sandbox{cli: cli, cfg: restCfg, namespace: ns, podName: podName, password: password, inCluster: inCluster}
+	// Capture the sandbox in a local for cleanup: `return nil, err` resets
+	// the named return before deferred functions run.
+	s := &Sandbox{cli: cli, cfg: restCfg, namespace: ns, podName: podName, password: password, inCluster: inCluster}
+	sb = s
 	defer func() {
 		if err != nil {
-			_ = sb.Destroy(context.Background())
+			_ = s.Destroy(context.Background())
 		}
 	}()
 
 	if err := ensureNamespace(ctx, cli, ns); err != nil {
 		return nil, err
 	}
-	if err := ensureDenyEgressPolicy(ctx, cli, ns); err != nil {
+	if err := EnsureDenyEgressPolicy(ctx, cli, ns); err != nil {
 		return nil, err
 	}
 
@@ -122,7 +125,7 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		return nil, fmt.Errorf("creating sandbox pod: %w", err)
 	}
 
-	if err := sb.waitReady(ctx, cfg.Driver.ReadyCmds(dbUser, password, dbName)); err != nil {
+	if err := s.waitReady(ctx, cfg.Driver.ReadyCmds(dbUser, password, dbName)); err != nil {
 		return nil, err
 	}
 
@@ -131,32 +134,32 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		if err != nil {
 			return nil, err
 		}
-		sb.host = p.Status.PodIP
-		sb.hostPort = port.String()
+		s.host = p.Status.PodIP
+		s.hostPort = port.String()
 	} else {
-		localPort, stop, err := sb.portForward(port.IntValue())
+		localPort, stop, err := s.portForward(port.IntValue())
 		if err != nil {
 			return nil, fmt.Errorf("port-forward to sandbox: %w", err)
 		}
-		sb.host = "127.0.0.1"
-		sb.hostPort = fmt.Sprintf("%d", localPort)
-		sb.pfStop = stop
+		s.host = "127.0.0.1"
+		s.hostPort = fmt.Sprintf("%d", localPort)
+		s.pfStop = stop
 	}
 
 	ttlCtx, cancel := context.WithCancel(context.Background())
-	sb.ttlCancel = cancel
+	s.ttlCancel = cancel
 	go func() { // #nosec G118 -- watchdog must outlive the request context to guarantee teardown
 		select {
 		case <-ttlCtx.Done():
 		case <-time.After(cfg.TTL):
-			_ = sb.Destroy(context.Background())
+			_ = s.Destroy(context.Background())
 		}
 	}()
 	return sb, nil
 }
 
-// loadConfig prefers in-cluster config, falling back to the kubeconfig chain.
-func loadConfig() (*rest.Config, bool, error) {
+// LoadConfig prefers in-cluster config, falling back to the kubeconfig chain.
+func LoadConfig() (*rest.Config, bool, error) {
 	if c, err := rest.InClusterConfig(); err == nil {
 		return c, true, nil
 	}
@@ -298,10 +301,10 @@ func ensureNamespace(ctx context.Context, cli kubernetes.Interface, ns string) e
 	return err
 }
 
-// ensureDenyEgressPolicy blocks all egress from sandbox pods: a restored
+// EnsureDenyEgressPolicy blocks all egress from sandbox pods: a restored
 // database must never be able to reach production. (Enforcement requires a
 // NetworkPolicy-capable CNI.)
-func ensureDenyEgressPolicy(ctx context.Context, cli kubernetes.Interface, ns string) error {
+func EnsureDenyEgressPolicy(ctx context.Context, cli kubernetes.Interface, ns string) error {
 	pol := &netv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "firedrill-sandbox-deny-egress", Namespace: ns},
 		Spec: netv1.NetworkPolicySpec{
