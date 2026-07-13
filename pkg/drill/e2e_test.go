@@ -26,6 +26,7 @@ func TestE2EDrill(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("create table ledger (id bigserial primary key, amount bigint not null);\n")
 	sb.WriteString("insert into ledger (amount) select g from generate_series(1, 5000) g;\n")
+	sb.WriteString("create table firedrill_canary (token text); insert into firedrill_canary values ('fd-e2e-token');\n")
 	if err := os.WriteFile(dump, []byte(sb.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +51,7 @@ spec:
     - rowCount: { query: "select count(*) from ledger", min: 5000 }
     - checksum: { table: ledger, column: id }
     - smoke: { sql: "select 1 from ledger where amount = 1", expectRows: "==1" }
+    - canary: { sql: "select token from firedrill_canary", expect: "fd-e2e-token" }
   report:
     sign: true
     html: true
@@ -100,6 +102,44 @@ spec:
 	}
 	if !strings.Contains(string(prom), `firedrill_drill_verified{drill="e2e"} 1`) {
 		t.Errorf("metrics missing verified gauge:\n%s", prom)
+	}
+
+	// Attestation written and verifiable.
+	pub, err := report.LoadPublicKey(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := report.VerifyAttestation(path, pub); err != nil {
+		t.Errorf("attestation invalid: %v", err)
+	}
+
+	// Ransomware simulation: a dump whose canary token differs (as if the
+	// source was encrypted/replaced) must fail the canary check.
+	badDump := filepath.Join(dir, "ransom.sql")
+	bad := strings.Replace(sb.String(), "fd-e2e-token", "ENCRYPTED-GARBAGE", 1)
+	if err := os.WriteFile(badDump, []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	doc2 := strings.Replace(strings.Replace(doc, dump, badDump, 1), "name: e2e }", "name: e2e-ransom }", 1)
+	d2, err := spec.Parse(strings.NewReader(doc2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2, _, err := drill.Run(ctx, d2, drill.Options{EvidenceDir: filepath.Join(dir, "evidence"), KeyDir: dir, Version: "e2e-test"})
+	if err != nil {
+		t.Fatalf("ransom drill should execute: %v", err)
+	}
+	if e2.Verified {
+		t.Fatal("drill with tampered canary must not verify")
+	}
+	foundCanaryFail := false
+	for _, c := range e2.Checks {
+		if c.Name == "canary" && !c.Passed && !c.Skipped {
+			foundCanaryFail = true
+		}
+	}
+	if !foundCanaryFail {
+		t.Errorf("expected canary FAIL, checks: %+v", e2.Checks)
 	}
 }
 

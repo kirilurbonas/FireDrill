@@ -57,6 +57,7 @@ func TestDataChecksSkippedOnRestoreFailure(t *testing.T) {
 	checks := []spec.Check{
 		{RowCount: &spec.RowCountCheck{Query: "select 1", Min: 1}},
 		{Smoke: &spec.SmokeCheck{SQL: "select 1"}},
+		{Canary: &spec.CanaryCheck{SQL: "select token from c", Expect: "x"}},
 	}
 	res := Run(context.Background(), nil, checks, Context{RestoreErr: errors.New("boom")})
 	for _, r := range res {

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -59,6 +60,17 @@ func GenerateKeypair(dir string) (privPath, pubPath string, err error) {
 	}
 	// #nosec G306 -- the public key is public by definition
 	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
+		return "", "", err
+	}
+	// Also write a PKIX-encoded copy that cosign and openssl understand:
+	// cosign verify-blob-attestation --key firedrill.cosign.pub …
+	spki, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return "", "", err
+	}
+	cosignPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: spki})
+	// #nosec G306 -- public key
+	if err := os.WriteFile(filepath.Join(dir, "firedrill.cosign.pub"), cosignPEM, 0o644); err != nil {
 		return "", "", err
 	}
 	return privPath, pubPath, nil
@@ -135,6 +147,15 @@ func Verify(path string, trustedPub ed25519.PublicKey) error {
 		return errors.New("SIGNATURE INVALID — evidence has been modified")
 	}
 	return nil
+}
+
+// ParsePublicKeyPEM decodes a firedrill.pub PEM block.
+func ParsePublicKeyPEM(data []byte) (ed25519.PublicKey, error) {
+	block, _ := pem.Decode(data)
+	if block == nil || len(block.Bytes) != ed25519.PublicKeySize {
+		return nil, errors.New("malformed public key PEM")
+	}
+	return ed25519.PublicKey(block.Bytes), nil
 }
 
 // Fingerprint is a short identifier for a public key (sha256, first 16 hex).

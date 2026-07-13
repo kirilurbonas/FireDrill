@@ -207,6 +207,9 @@ func finalize(ctx context.Context, d *spec.Drill, opts Options, e *report.Eviden
 		if _, err := report.Sign(path, priv); err != nil {
 			return e, path, fmt.Errorf("signing evidence: %w", err)
 		}
+		if _, err := report.Attest(path, priv); err != nil {
+			return e, path, fmt.Errorf("attesting evidence: %w", err)
+		}
 	}
 	if d.Spec.Report.HTML {
 		htmlPath, err := report.WriteHTML(e, path)

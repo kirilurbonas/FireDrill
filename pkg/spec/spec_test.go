@@ -28,6 +28,7 @@ spec:
     - rowCount:  { query: "select count(*) from ledger", min: 1000000 }
     - checksum:  { table: ledger, column: id }
     - smoke:     { sql: "select 1", expectRows: ">=1" }
+    - canary:    { sql: "select token from firedrill_canary", expect: "fd-tok" }
   report:
     sign: true
     controls: [ISO27001-A.8.13]
@@ -44,8 +45,8 @@ func TestParseValid(t *testing.T) {
 	if d.Spec.Objectives.RTO.Duration != 15*time.Minute {
 		t.Errorf("rto = %v", d.Spec.Objectives.RTO)
 	}
-	if len(d.Spec.Verify) != 5 {
-		t.Errorf("verify checks = %d, want 5", len(d.Spec.Verify))
+	if len(d.Spec.Verify) != 6 {
+		t.Errorf("verify checks = %d, want 6", len(d.Spec.Verify))
 	}
 }
 
@@ -105,7 +106,8 @@ func TestParseErrors(t *testing.T) {
 		"no ttl":         strings.Replace(valid, "ttl: 30m", "ttl: 0s", 1),
 		"bad duration":   strings.Replace(valid, "rto: 15m", "rto: soon", 1),
 		"two check keys": strings.Replace(valid, "- freshness:", "  freshness2: 1\n    - freshness:", 1),
-		"empty smoke":    strings.Replace(valid, `sql: "select 1"`, `sql: ""`, 1),
+		"empty smoke":    strings.Replace(valid, `sql: "select 1", expectRows`, `sql: "", expectRows`, 1),
+		"empty canary":   strings.Replace(valid, `expect: "fd-tok"`, `expect: ""`, 1),
 		"unsafe name":    strings.Replace(valid, "name: payments-db", "name: ../../etc/passwd", 1),
 		"uppercase name": strings.Replace(valid, "name: payments-db", "name: PaymentsDB", 1),
 		"k8s check on engine drill": strings.Replace(valid, "- freshness: { maxAge: 1h }",

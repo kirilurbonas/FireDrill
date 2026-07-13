@@ -25,6 +25,10 @@ insert into accounts (name, status)
   select 'account-' || g, case when g % 20 = 0 then 'suspended' else 'active' end
   from generate_series(1, 500) g;
 
+-- Ransomware canary: a known sentinel FireDrill verifies restores byte-exact.
+create table firedrill_canary (token text not null);
+insert into firedrill_canary values ('fd-canary-2f8a91c4');
+
 create table ledger (
   id bigserial primary key,
   account_id int not null references accounts(id),

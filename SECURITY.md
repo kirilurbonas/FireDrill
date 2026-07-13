@@ -24,10 +24,16 @@ FireDrill is designed so that a drill can never endanger production:
 - **No secrets in process lists.** Database passwords are passed to
   in-sandbox tooling via environment (`MYSQL_PWD` derived inside the
   container), never argv.
-- **Tamper-evident evidence.** Evidence records are signed with ed25519;
-  `firedrill verify-evidence` detects any modification. The signing key
-  lives at `~/.config/firedrill/firedrill.key` (0600) and is never copied
-  into sandboxes or evidence.
+- **Tamper-evident evidence.** Evidence records are signed with ed25519
+  twice over: a detached `.sig` envelope and an in-toto/DSSE attestation
+  (`.intoto.jsonl`) verifiable with `cosign verify-blob-attestation`.
+  `firedrill verify-evidence` checks both. The signing key lives at
+  `~/.config/firedrill/firedrill.key` (0600) and is never copied into
+  sandboxes or evidence.
+- **Ransomware canary.** The `canary` check pins a pre-planted sentinel
+  value that must restore byte-exact; encrypted-at-source or silently
+  corrupted backups fail the drill. The sentinel is never recorded in
+  evidence or logs.
 - **User-supplied SQL runs in the sandbox only.** `rowCount`/`smoke`
   queries are user-authored by design and execute exclusively against the
   disposable restored copy. Checksum identifiers are validated before

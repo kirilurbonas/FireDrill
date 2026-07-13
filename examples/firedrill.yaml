@@ -22,6 +22,7 @@ spec:
     - rowCount:  { query: "select count(*) from ledger", min: 100000 }
     - checksum:  { table: ledger, column: id }
     - smoke:     { sql: "select 1 from accounts where status='active' limit 1", expectRows: ">=1" }
+    - canary:    { sql: "select token from firedrill_canary", expect: "fd-canary-2f8a91c4" }
   report:
     sign: true
     html: true    # also write a shareable <evidence>.html report

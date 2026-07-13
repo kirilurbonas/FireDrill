@@ -84,6 +84,9 @@ func runOne(ctx context.Context, db *sql.DB, c spec.Check, dc Context) Result {
 	case c.Smoke != nil:
 		return dataCheck(dc, "smoke", func() Result { return smoke(ctx, db, c.Smoke) })
 
+	case c.Canary != nil:
+		return dataCheck(dc, "canary", func() Result { return canary(ctx, db, c.Canary) })
+
 	case c.PodsReady != nil:
 		return dataCheck(dc, "podsReady", func() Result { return podsReady(ctx, dc.K8s, dc.Namespace, c.PodsReady) })
 
@@ -148,6 +151,21 @@ func smoke(ctx context.Context, db *sql.DB, c *spec.SmokeCheck) Result {
 		return Result{Name: "smoke", Passed: false, Detail: err.Error()}
 	}
 	return Result{Name: "smoke", Passed: ok, Detail: fmt.Sprintf("%d rows (expect %s)", n, expect)}
+}
+
+// canary asserts a planted sentinel value restored byte-exact. Ransomware-
+// encrypted or truncated backups cannot reproduce a known token, so this
+// catches corruption that row counts and freshness never would. The exact
+// value is never written to results — evidence must not leak the sentinel.
+func canary(ctx context.Context, db *sql.DB, c *spec.CanaryCheck) Result {
+	var got string
+	if err := db.QueryRowContext(ctx, c.SQL).Scan(&got); err != nil {
+		return Result{Name: "canary", Passed: false, Detail: "query failed: " + err.Error()}
+	}
+	if got != c.Expect {
+		return Result{Name: "canary", Passed: false, Detail: "sentinel value mismatch — possible ransomware/corruption"}
+	}
+	return Result{Name: "canary", Passed: true, Detail: "sentinel restored intact"}
 }
 
 var rowsExprRe = regexp.MustCompile(`^(>=|<=|==|>|<)\s*(\d+)$`)

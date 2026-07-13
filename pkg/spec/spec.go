@@ -79,6 +79,7 @@ type Check struct {
 	RowCount *RowCountCheck `yaml:"rowCount,omitempty"`
 	Checksum *ChecksumCheck `yaml:"checksum,omitempty"`
 	Smoke    *SmokeCheck    `yaml:"smoke,omitempty"`
+	Canary   *CanaryCheck   `yaml:"canary,omitempty"`
 	// Kubernetes checks (velero driver):
 	PodsReady     *PodsReadyCheck     `yaml:"podsReady,omitempty"`
 	ResourceCount *ResourceCountCheck `yaml:"resourceCount,omitempty"`
@@ -98,6 +99,14 @@ type ChecksumCheck struct {
 	Column string `yaml:"column"`
 	// Expect pins the checksum to a known value; empty means record-only.
 	Expect string `yaml:"expect,omitempty"`
+}
+
+// CanaryCheck proves a known sentinel value planted before the backup
+// restored byte-exact — encrypted-at-source (ransomware) or silently
+// corrupted backups cannot reproduce it.
+type CanaryCheck struct {
+	SQL    string `yaml:"sql"`    // must return exactly one row, one column
+	Expect string `yaml:"expect"` // exact expected value
 }
 
 type PodsReadyCheck struct {
@@ -302,6 +311,12 @@ func (c *Check) validate() error {
 			return errors.New("smoke.sql is required")
 		}
 	}
+	if c.Canary != nil {
+		n++
+		if c.Canary.SQL == "" || c.Canary.Expect == "" {
+			return errors.New("canary requires sql and expect")
+		}
+	}
 	if c.PodsReady != nil {
 		n++
 		if c.PodsReady.Timeout.Duration <= 0 {
@@ -323,7 +338,7 @@ func (c *Check) validate() error {
 }
 
 func (c *Check) isSQL() bool {
-	return c.RowCount != nil || c.Checksum != nil || c.Smoke != nil
+	return c.RowCount != nil || c.Checksum != nil || c.Smoke != nil || c.Canary != nil
 }
 
 func (c *Check) isK8s() bool {

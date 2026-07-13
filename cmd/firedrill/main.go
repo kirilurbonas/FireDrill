@@ -4,7 +4,6 @@ package main
 
 import (
 	"crypto/ed25519"
-	"encoding/pem"
 	"fmt"
 	"os"
 
@@ -186,10 +185,10 @@ func keygenCmd() *cobra.Command {
 }
 
 func verifyEvidenceCmd() *cobra.Command {
-	var pubPath string
+	var pubPath, keyDir string
 	cmd := &cobra.Command{
 		Use:   "verify-evidence <evidence.json>",
-		Short: "Verify the signature on an evidence file",
+		Short: "Verify the signature and attestation on an evidence file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var trusted ed25519.PublicKey
@@ -198,19 +197,47 @@ func verifyEvidenceCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				block, _ := pem.Decode(data)
-				if block == nil || len(block.Bytes) != ed25519.PublicKeySize {
-					return fmt.Errorf("malformed public key %s", pubPath)
+				trusted, err = report.ParsePublicKeyPEM(data)
+				if err != nil {
+					return fmt.Errorf("%w: %s", err, pubPath)
 				}
-				trusted = ed25519.PublicKey(block.Bytes)
 			}
 			if err := report.Verify(args[0], trusted); err != nil {
 				return err
 			}
 			fmt.Println("✓ signature valid — evidence is intact")
+
+			// Attestation verification needs the public key; fall back to the
+			// default key dir when --public-key wasn't given.
+			att := trusted
+			if att == nil {
+				dir := keyDir
+				if dir == "" {
+					var err error
+					dir, err = report.DefaultKeyDir()
+					if err != nil {
+						return err
+					}
+				}
+				var err error
+				att, err = report.LoadPublicKey(dir)
+				if err != nil {
+					fmt.Println("– attestation not checked (no public key available)")
+					return nil
+				}
+			}
+			if _, err := os.Stat(args[0] + ".intoto.jsonl"); err != nil {
+				fmt.Println("– no attestation present (pre-v0.6 evidence)")
+				return nil
+			}
+			if err := report.VerifyAttestation(args[0], att); err != nil {
+				return err
+			}
+			fmt.Println("✓ attestation valid (in-toto/DSSE)")
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&pubPath, "public-key", "", "require signature from this public key (PEM)")
+	cmd.Flags().StringVar(&keyDir, "key-dir", "", "key directory for attestation check (default ~/.config/firedrill)")
 	return cmd
 }

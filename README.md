@@ -61,6 +61,35 @@ Auditors can verify with `--public-key ~/.config/firedrill/firedrill.pub` to add
 
 With `report.html: true`, a self-contained HTML report (`<evidence>.html`) is written next to the JSON — shareable with anyone who won't read JSON.
 
+**in-toto/DSSE attestations** — alongside the `.sig`, every signed drill emits `<evidence>.intoto.jsonl`: a DSSE envelope over an in-toto Statement whose predicate is the evidence. `verify-evidence` checks it automatically, and it's verifiable with standard supply-chain tooling:
+
+```sh
+cosign verify-blob-attestation \
+  --key ~/.config/firedrill/firedrill.cosign.pub \
+  --type https://firedrill.dev/drill-evidence/v1 \
+  --signature evidence/payments-db-….json.intoto.jsonl \
+  --insecure-ignore-tlog \
+  evidence/payments-db-….json
+```
+
+(`keygen` writes `firedrill.cosign.pub`, a PKIX copy of the key for cosign/openssl. `--insecure-ignore-tlog` because drill evidence is signed offline, not logged to Rekor.)
+
+## Ransomware canary
+
+Plant a sentinel value in production before backups run, then have every drill prove it restores **byte-exact**:
+
+```sql
+create table firedrill_canary (token text);
+insert into firedrill_canary values ('fd-canary-2f8a91c4');
+```
+
+```yaml
+verify:
+  - canary: { sql: "select token from firedrill_canary", expect: "fd-canary-2f8a91c4" }
+```
+
+Row counts and freshness can't catch a backup that was encrypted at the source or silently corrupted — a known token that must match exactly can. The sentinel value itself is never written into evidence.
+
 ## Compliance-control export
 
 Drills declare which controls they evidence (`report.controls: [ISO27001-A.8.13, SOC2-A1.2]`). `firedrill controls` aggregates an evidence directory into an auditor-ready matrix — per control: every run, its result, measured restore time, RTO/RPO status, and whether the evidence signature validates:
@@ -169,7 +198,7 @@ CI runs all of it — lint (with e2e files), `govulncheck`, unit tests, and the 
 
 ## Roadmap
 
-Next up: cloud sandboxes (Terraform/RDS), sigstore/cosign attestations. See [firedrill-plan.md](firedrill-plan.md).
+Next up: cloud sandboxes (Terraform/RDS). See [firedrill-plan.md](firedrill-plan.md).
 
 ## License
 

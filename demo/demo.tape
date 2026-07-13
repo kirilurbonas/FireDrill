@@ -5,7 +5,7 @@ Output demo/demo.gif
 
 Set FontSize 15
 Set Width 900
-Set Height 520
+Set Height 560
 Set Theme "Catppuccin Mocha"
 Set Padding 12
 Set TypingSpeed 40ms
@@ -13,7 +13,7 @@ Set TypingSpeed 40ms
 Type "firedrill run payments-db -f examples/firedrill.yaml"
 Sleep 500ms
 Enter
-Sleep 16s
+Sleep 14s
 Type "firedrill verify-evidence evidence/payments-db-*.json"
 Sleep 500ms
 Enter
