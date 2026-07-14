@@ -101,6 +101,15 @@ firedrill controls --format json -o controls.json
 
 Hand the markdown (or JSON) straight to your GRC team at audit time instead of screenshots and a Confluence page.
 
+`firedrill history` shows past runs with an RTO trend, so restore-time regressions are visible before they become incidents:
+
+```
+WHEN (UTC)         DRILL          RESULT  RESTORE  RTO RPO  TREND
+2026-07-11 03:00   payments-db    ok      3m50s    ✓   ✓    ▇▇▇▇▇▇▇▇
+2026-07-12 03:00   payments-db    ok      4m10s    ✓   ✓    ▇▇▇▇▇▇▇▇▇
+2026-07-13 03:00   payments-db    FAILED  9m02s    ✗   ✓    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+```
+
 ## Kubernetes
 
 Two levels of Kubernetes support:
@@ -194,7 +203,7 @@ make e2e     # full drill loops against real Docker + a Kubernetes cluster (kind
 make lint    # golangci-lint (incl. gosec)
 ```
 
-CI runs all of it — lint (with e2e files), `govulncheck`, unit tests, and the Docker/Kubernetes/operator e2e suites against a kind cluster. Dependabot keeps dependencies current.
+CI runs all of it — lint (with e2e files), `govulncheck`, unit tests, and the Docker/Kubernetes/Velero/operator e2e suites against a kind cluster. Dependabot keeps dependencies current (PRs auto-merge when CI passes). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Roadmap
 

@@ -30,7 +30,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), controlsCmd(), operatorCmd())
+	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), controlsCmd(), historyCmd(), operatorCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(exitError)
@@ -123,6 +123,25 @@ func controlsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&evidenceDir, "evidence-dir", "evidence", "directory of evidence JSON files")
 	cmd.Flags().StringVar(&format, "format", "markdown", "output format: markdown | json")
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write to file instead of stdout")
+	return cmd
+}
+
+func historyCmd() *cobra.Command {
+	var evidenceDir, drillName string
+	cmd := &cobra.Command{
+		Use:   "history",
+		Short: "Show past drill runs and the RTO trend",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			entries, err := report.LoadHistory(evidenceDir, drillName)
+			if err != nil {
+				return err
+			}
+			report.WriteHistory(cmd.OutOrStdout(), entries)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&evidenceDir, "evidence-dir", "evidence", "directory of evidence JSON files")
+	cmd.Flags().StringVar(&drillName, "drill", "", "filter by drill name")
 	return cmd
 }
 
