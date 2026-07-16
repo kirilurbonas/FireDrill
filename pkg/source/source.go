@@ -76,7 +76,14 @@ func fetchS3(ctx context.Context, from spec.From) (*Backup, error) {
 	if err != nil {
 		return nil, fmt.Errorf("aws config: %w", err)
 	}
-	cli := s3.NewFromConfig(cfg)
+	cli := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		if from.Endpoint != "" {
+			// S3-compatible stores (MinIO, Ceph, …): custom endpoint with
+			// path-style addressing (virtual-hosted style needs DNS per bucket).
+			o.BaseEndpoint = &from.Endpoint
+			o.UsePathStyle = true
+		}
+	})
 
 	obj, err := cli.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	if err != nil {

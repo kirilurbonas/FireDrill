@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,7 +59,12 @@ func TestE2EOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manager: %v", err)
 	}
-	rec := &operator.Reconciler{Client: mgr.GetClient(), Version: "e2e", EvidenceDir: filepath.Join(dir, "evidence")}
+	rec := &operator.Reconciler{
+		Client:      mgr.GetClient(),
+		Version:     "e2e",
+		EvidenceDir: filepath.Join(dir, "evidence"),
+		Recorder:    mgr.GetEventRecorder("firedrill"),
+	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -115,7 +121,17 @@ func TestE2EOperator(t *testing.T) {
 				if !verified {
 					t.Fatal("phase Verified but verified=false")
 				}
-				return
+				// A DrillVerified event must land on the CR (recorder is async).
+				evDeadline := time.Now().Add(30 * time.Second)
+				for time.Now().Before(evDeadline) {
+					out, _ := exec.Command("kubectl", "get", "events", "-n", "default",
+						"--field-selector", "involvedObject.name=e2e-operator", "-o", "name").CombinedOutput()
+					if len(strings.TrimSpace(string(out))) > 0 {
+						return
+					}
+					time.Sleep(2 * time.Second)
+				}
+				t.Fatal("no Kubernetes event recorded for the drill")
 			}
 			if phase == "Error" || phase == "Failed" || phase == "Invalid" {
 				t.Fatalf("drill ended in phase %s: %s", phase, msg)

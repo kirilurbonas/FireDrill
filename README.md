@@ -37,6 +37,22 @@ make build                        # builds bin/firedrill
 
 Exit codes: `0` recovery verified · `1` drill ran but recovery not verified · `2` drill could not execute.
 
+**Fleets**: a drill file can contain multiple drills as YAML documents (`---`). `firedrill run <name>` picks one; `firedrill run --all` runs everything and prints a scorecard:
+
+```
+DRILL          RESULT     RESTORE  RTO RPO  EVIDENCE
+payments-db    verified   3m50s    ✓   ✓    evidence/payments-db-….json
+orders-db      FAILED     1m02s    ✓   ✓    evidence/orders-db-….json
+
+2 drill(s): 1 verified, 1 failed, 0 errored
+```
+
+**S3-compatible stores** (MinIO, Ceph, Wasabi, …): add `endpoint` to the source and FireDrill switches to path-style addressing:
+
+```yaml
+from: { type: s3, uri: "s3://backups/pg/latest.dump", endpoint: "http://minio.internal:9000" }
+```
+
 ## How it works
 
 1. **Declare** recovery targets in `firedrill.yaml` — source backup, restore method, RTO/RPO objectives, checks.
@@ -125,7 +141,7 @@ kubectl apply -f deploy/example-recoverydrill.yaml
 kubectl get drills -n firedrill-system     # NAME  PHASE  VERIFIED  LAST RUN  SCHEDULE
 ```
 
-The CR's `spec:` block is exactly the `firedrill.yaml` spec — the operator validates and runs it with the same code as the CLI, and records the outcome (`phase`, `verified`, measured RTO/RPO) in `.status`.
+The CR's `spec:` block is exactly the `firedrill.yaml` spec — the operator validates and runs it with the same code as the CLI, records the outcome (`phase`, `verified`, measured RTO/RPO) in `.status`, and emits Kubernetes Events (`DrillVerified` / `DrillFailed` / `DrillError`) so `kubectl describe drill` tells the story.
 
 The operator image is published to `ghcr.io/kirilurbonas/firedrill` (multi-arch) by the release workflow — `deploy/operator.yaml` uses it out of the box; pin a version tag in production.
 

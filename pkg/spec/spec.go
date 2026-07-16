@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -59,6 +60,9 @@ type From struct {
 	// Credentials are never inlined in the spec.
 	CredentialsRef string `yaml:"credentialsRef,omitempty"`
 	Region         string `yaml:"region,omitempty"`
+	// Endpoint targets S3-compatible stores (MinIO, Ceph, Wasabi, …);
+	// path-style addressing is used automatically when set.
+	Endpoint string `yaml:"endpoint,omitempty"`
 	// Velero sources (driver: velero):
 	Backup    string `yaml:"backup,omitempty"`    // Velero Backup CR name
 	Namespace string `yaml:"namespace,omitempty"` // source namespace the backup covers
@@ -162,28 +166,75 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 
 func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
-// Load reads, decodes (strictly) and validates a drill file.
+// Load reads a single-drill file (the first document; errors if absent).
 func Load(path string) (*Drill, error) {
+	drills, err := LoadAll(path)
+	if err != nil {
+		return nil, err
+	}
+	return drills[0], nil
+}
+
+// LoadAll reads, decodes (strictly) and validates every YAML document in a
+// drill file. Duplicate drill names are rejected.
+func LoadAll(path string) ([]*Drill, error) {
 	f, err := os.Open(path) // #nosec G304 -- user-supplied spec path is the CLI's input
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	return Parse(f)
+	return ParseAll(f)
 }
 
-// Parse decodes a drill document from r with unknown fields rejected.
+// Parse decodes a single drill document from r with unknown fields rejected.
 func Parse(r io.Reader) (*Drill, error) {
-	dec := yaml.NewDecoder(r)
-	dec.KnownFields(true)
-	var d Drill
-	if err := dec.Decode(&d); err != nil {
-		return nil, fmt.Errorf("parsing drill spec: %w", err)
-	}
-	if err := d.Validate(); err != nil {
+	drills, err := ParseAll(r)
+	if err != nil {
 		return nil, err
 	}
-	return &d, nil
+	return drills[0], nil
+}
+
+// ParseAll decodes every YAML document from r, validating each.
+func ParseAll(r io.Reader) ([]*Drill, error) {
+	dec := yaml.NewDecoder(r)
+	dec.KnownFields(true)
+	var drills []*Drill
+	seen := map[string]bool{}
+	for {
+		var d Drill
+		err := dec.Decode(&d)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parsing drill spec (document %d): %w", len(drills)+1, err)
+		}
+		if err := d.Validate(); err != nil {
+			return nil, fmt.Errorf("document %d (%s): %w", len(drills)+1, d.Metadata.Name, err)
+		}
+		if seen[d.Metadata.Name] {
+			return nil, fmt.Errorf("duplicate drill name %q", d.Metadata.Name)
+		}
+		seen[d.Metadata.Name] = true
+		drills = append(drills, &d)
+	}
+	if len(drills) == 0 {
+		return nil, errors.New("no drill documents found")
+	}
+	return drills, nil
+}
+
+// FindDrill returns the named drill from a set, with a helpful error.
+func FindDrill(drills []*Drill, name string) (*Drill, error) {
+	var names []string
+	for _, d := range drills {
+		if d.Metadata.Name == name {
+			return d, nil
+		}
+		names = append(names, d.Metadata.Name)
+	}
+	return nil, fmt.Errorf("drill %q not found (file contains: %s)", name, strings.Join(names, ", "))
 }
 
 // Validate checks structural invariants of the drill.
@@ -213,6 +264,9 @@ func (d *Drill) Validate() error {
 		}
 		if d.Spec.Source.From.URI == "" {
 			add("spec.source.from.uri is required")
+		}
+		if d.Spec.Source.From.Endpoint != "" && d.Spec.Source.From.Type != "s3" {
+			add("spec.source.from.endpoint is only valid with type: s3")
 		}
 	case "velero":
 		if !velero {

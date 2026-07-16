@@ -14,9 +14,11 @@ import (
 
 	"github.com/robfig/cron/v3"
 	yaml "gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -35,8 +37,17 @@ type Reconciler struct {
 	Version string
 	// EvidenceDir is where evidence JSON is written inside the operator pod.
 	EvidenceDir string
+	// Recorder emits Kubernetes Events on the RecoveryDrill CR (optional).
+	Recorder events.EventRecorder
 	// Now is stubbed in tests.
 	Now func() time.Time
+}
+
+// event emits a Kubernetes Event when a recorder is configured.
+func (r *Reconciler) event(obj *unstructured.Unstructured, eventType, reason, message string) {
+	if r.Recorder != nil {
+		r.Recorder.Eventf(obj, nil, eventType, reason, "Reconcile", "%s", message)
+	}
 }
 
 // Reconcile implements the drill scheduling loop for one RecoveryDrill.
@@ -56,6 +67,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		// Invalid spec: surface in status, don't requeue (edits retrigger).
 		_ = r.patchStatus(ctx, obj, map[string]any{"phase": "Invalid", "message": err.Error()})
+		r.event(obj, corev1.EventTypeWarning, "InvalidSpec", err.Error())
 		logger.Error(err, "invalid RecoveryDrill spec")
 		return ctrl.Result{}, nil
 	}
@@ -100,14 +112,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		status["phase"] = "Error"
 		status["message"] = err.Error()
 		status["verified"] = false
+		r.event(obj, corev1.EventTypeWarning, "DrillError", err.Error())
 	case e.Verified:
 		status["phase"] = "Verified"
 		status["message"] = "recovery verified"
 		status["verified"] = true
+		r.event(obj, corev1.EventTypeNormal, "DrillVerified",
+			fmt.Sprintf("recovery verified: restore %.0fs, backup age %.0fm",
+				e.Measured.RestoreSeconds, e.Backup.AgeSecs/60))
 	default:
 		status["phase"] = "Failed"
 		status["message"] = failureSummary(e)
 		status["verified"] = false
+		r.event(obj, corev1.EventTypeWarning, "DrillFailed", failureSummary(e))
 	}
 	if e != nil {
 		status["measuredRestoreSeconds"] = e.Measured.RestoreSeconds

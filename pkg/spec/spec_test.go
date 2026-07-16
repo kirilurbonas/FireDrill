@@ -98,6 +98,40 @@ func TestParseVelero(t *testing.T) {
 	}
 }
 
+func TestParseAllMultiDoc(t *testing.T) {
+	second := strings.Replace(valid, "name: payments-db", "name: orders-db", 1)
+	multi := valid + "\n---\n" + second
+
+	drills, err := ParseAll(strings.NewReader(multi))
+	if err != nil {
+		t.Fatalf("ParseAll: %v", err)
+	}
+	if len(drills) != 2 || drills[1].Metadata.Name != "orders-db" {
+		t.Fatalf("drills = %+v", drills)
+	}
+
+	if _, err := FindDrill(drills, "orders-db"); err != nil {
+		t.Errorf("FindDrill: %v", err)
+	}
+	if _, err := FindDrill(drills, "nope"); err == nil || !strings.Contains(err.Error(), "payments-db") {
+		t.Errorf("FindDrill error should list names: %v", err)
+	}
+
+	// Duplicate names rejected.
+	if _, err := ParseAll(strings.NewReader(valid + "\n---\n" + valid)); err == nil {
+		t.Error("expected duplicate-name error")
+	}
+	// Invalid second document rejected with its index.
+	bad := valid + "\n---\n" + strings.Replace(second, "driver: postgres", "driver: oracle", 1)
+	if _, err := ParseAll(strings.NewReader(bad)); err == nil || !strings.Contains(err.Error(), "document 2") {
+		t.Errorf("expected document-2 error, got %v", err)
+	}
+	// Empty input rejected.
+	if _, err := ParseAll(strings.NewReader("")); err == nil {
+		t.Error("expected error for empty file")
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := map[string]string{
 		"unknown field":  strings.Replace(valid, "image:", "imagee:", 1),

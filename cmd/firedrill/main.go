@@ -45,21 +45,52 @@ func runCmd() *cobra.Command {
 		noColor     bool
 		dryRun      bool
 	)
+	var runAll bool
 	cmd := &cobra.Command{
-		Use:   "run <drill-name>",
-		Short: "Execute a recovery drill",
-		Args:  cobra.ExactArgs(1),
+		Use:   "run [drill-name]",
+		Short: "Execute a recovery drill (or every drill in the file with --all)",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			d, err := spec.Load(file)
+			drills, err := spec.LoadAll(file)
 			if err != nil {
 				return err
-			}
-			if d.Metadata.Name != args[0] {
-				return fmt.Errorf("drill %q not found in %s (contains %q)", args[0], file, d.Metadata.Name)
 			}
 			p := &report.Printer{
 				W:     os.Stdout,
 				Color: !noColor && isatty.IsTerminal(os.Stdout.Fd()),
+			}
+			opts := drill.Options{
+				Printer:     p,
+				EvidenceDir: evidenceDir,
+				KeyDir:      keyDir,
+				Version:     version.Version,
+			}
+
+			if runAll {
+				if len(args) > 0 {
+					return fmt.Errorf("--all and a drill name are mutually exclusive")
+				}
+				if dryRun {
+					p.Info("dry run — would run %d drill(s) from %s", len(drills), file)
+					return nil
+				}
+				outcomes := drill.RunAll(cmd.Context(), drills, opts)
+				_, failed, errored := report.WriteScorecard(os.Stdout, outcomes)
+				if errored > 0 {
+					os.Exit(exitError)
+				}
+				if failed > 0 {
+					os.Exit(exitFailed)
+				}
+				return nil
+			}
+
+			if len(args) == 0 {
+				return fmt.Errorf("provide a drill name or --all (file contains %d drills)", len(drills))
+			}
+			d, err := spec.FindDrill(drills, args[0])
+			if err != nil {
+				return err
 			}
 			if dryRun {
 				p.Info("dry run — would provision %s sandbox %s (ttl %s), restore %s, run %d checks",
@@ -67,12 +98,7 @@ func runCmd() *cobra.Command {
 					d.Spec.Source.From.URI, len(d.Spec.Verify))
 				return nil
 			}
-			e, path, err := drill.Run(cmd.Context(), d, drill.Options{
-				Printer:     p,
-				EvidenceDir: evidenceDir,
-				KeyDir:      keyDir,
-				Version:     version.Version,
-			})
+			e, path, err := drill.Run(cmd.Context(), d, opts)
 			if err != nil {
 				return err
 			}
@@ -83,6 +109,7 @@ func runCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&runAll, "all", false, "run every drill in the file and print a scorecard")
 	cmd.Flags().StringVarP(&file, "file", "f", "firedrill.yaml", "drill spec file")
 	cmd.Flags().StringVar(&evidenceDir, "evidence-dir", "", "override evidence output directory")
 	cmd.Flags().StringVar(&keyDir, "key-dir", "", "signing key directory (default ~/.config/firedrill)")
@@ -165,12 +192,16 @@ func validateCmd() *cobra.Command {
 		Use:   "validate",
 		Short: "Validate a drill spec without running it",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			d, err := spec.Load(file)
+			drills, err := spec.LoadAll(file)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✓ %s is valid — drill %q, %d checks, sandbox %s (ttl %s)\n",
-				file, d.Metadata.Name, len(d.Spec.Verify), d.Spec.Sandbox.Image, d.Spec.Sandbox.TTL)
+			for _, d := range drills {
+				fmt.Printf("✓ drill %q — %d checks, driver %s, sandbox %s (ttl %s)\n",
+					d.Metadata.Name, len(d.Spec.Verify), d.Spec.Source.Driver,
+					d.Spec.Sandbox.Provider, d.Spec.Sandbox.TTL)
+			}
+			fmt.Printf("✓ %s is valid — %d drill(s)\n", file, len(drills))
 			return nil
 		},
 	}

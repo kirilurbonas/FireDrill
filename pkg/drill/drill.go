@@ -34,6 +34,25 @@ type Options struct {
 	Version     string
 }
 
+// RunAll executes every drill sequentially and collects outcomes. Execution
+// errors are captured per drill — one broken drill never stops the fleet.
+func RunAll(ctx context.Context, drills []*spec.Drill, opts Options) []report.Outcome {
+	outcomes := make([]report.Outcome, 0, len(drills))
+	for _, d := range drills {
+		if p := opts.Printer; p != nil && len(drills) > 1 {
+			p.Info("── drill %s ──", d.Metadata.Name)
+		}
+		e, path, err := Run(ctx, d, opts)
+		outcomes = append(outcomes, report.Outcome{
+			Drill:        d.Metadata.Name,
+			Evidence:     e,
+			EvidencePath: path,
+			Err:          err,
+		})
+	}
+	return outcomes
+}
+
 // Run executes the drill and returns the evidence. A non-nil error means the
 // drill could not execute; a failed-but-executed drill returns evidence with
 // Verified=false and nil error.

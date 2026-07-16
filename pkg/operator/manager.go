@@ -25,6 +25,7 @@ func RunManager(version, evidenceDir, metricsAddr string) error {
 		Client:      mgr.GetClient(),
 		Version:     version,
 		EvidenceDir: evidenceDir,
+		Recorder:    mgr.GetEventRecorder("firedrill"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up controller: %w", err)
 	}
