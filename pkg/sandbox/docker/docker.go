@@ -95,14 +95,20 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 	if err != nil {
 		return nil, fmt.Errorf("driver port: %w", err)
 	}
+	containerCfg := &container.Config{
+		Image:        cfg.Image,
+		Env:          cfg.Driver.ContainerEnv(dbUser, password, dbName),
+		Labels:       map[string]string{"firedrill": "sandbox", "firedrill/drill": cfg.Name},
+		ExposedPorts: network.PortSet{enginePort: struct{}{}},
+	}
+	if cfg.ColdStart {
+		// The engine must not start yet — the driver places the data
+		// directory first, then starts it via Exec.
+		containerCfg.Entrypoint = []string{"sleep", "infinity"}
+	}
 	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Name: name,
-		Config: &container.Config{
-			Image:        cfg.Image,
-			Env:          cfg.Driver.ContainerEnv(dbUser, password, dbName),
-			Labels:       map[string]string{"firedrill": "sandbox", "firedrill/drill": cfg.Name},
-			ExposedPorts: network.PortSet{enginePort: struct{}{}},
-		},
+		Name:   name,
+		Config: containerCfg,
 		HostConfig: &container.HostConfig{
 			// Loopback only: the sandbox is never exposed beyond this host.
 			PortBindings: network.PortMap{enginePort: []network.PortBinding{{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: ""}}},
@@ -119,8 +125,10 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		return nil, fmt.Errorf("starting sandbox: %w", err)
 	}
 
-	if err := s.waitReady(ctx, cfg.Driver.ReadyCmds(dbUser, password, dbName)); err != nil {
-		return nil, err
+	if !cfg.ColdStart {
+		if err := s.waitReady(ctx, cfg.Driver.ReadyCmds(dbUser, password, dbName)); err != nil {
+			return nil, err
+		}
 	}
 
 	insp, err := cli.ContainerInspect(ctx, created.ID, client.ContainerInspectOptions{})

@@ -102,6 +102,12 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 	}
 
 	port := intstr.Parse(strings.TrimSuffix(cfg.Driver.Port(), "/tcp"))
+	var command []string
+	if cfg.ColdStart {
+		// The engine must not start yet — the driver places the data
+		// directory first, then starts it via Exec.
+		command = []string{"sleep", "infinity"}
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -111,9 +117,10 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
-				Name:  "db",
-				Image: cfg.Image,
-				Env:   envVars(cfg.Driver.ContainerEnv(dbUser, password, dbName)),
+				Name:    "db",
+				Image:   cfg.Image,
+				Command: command,
+				Env:     envVars(cfg.Driver.ContainerEnv(dbUser, password, dbName)),
 				Ports: []corev1.ContainerPort{{ContainerPort: int32(port.IntValue() & 0xffff)}}, // #nosec G115 -- valid TCP port from driver constant
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: ptr(false),
@@ -125,7 +132,11 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		return nil, fmt.Errorf("creating sandbox pod: %w", err)
 	}
 
-	if err := s.waitReady(ctx, cfg.Driver.ReadyCmds(dbUser, password, dbName)); err != nil {
+	var readyCmds [][]string
+	if !cfg.ColdStart {
+		readyCmds = cfg.Driver.ReadyCmds(dbUser, password, dbName)
+	}
+	if err := s.waitReady(ctx, readyCmds); err != nil {
 		return nil, err
 	}
 

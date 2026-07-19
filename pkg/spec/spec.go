@@ -49,8 +49,18 @@ type Objectives struct {
 }
 
 type Source struct {
-	Driver string `yaml:"driver"` // postgres
+	Driver string `yaml:"driver"` // postgres | mysql | velero
 	From   From   `yaml:"from"`
+	// Format of the backup artifact (postgres only):
+	//   dump (default)  — pg_dump output, logical restore into a fresh DB
+	//   basebackup      — pg_basebackup tar (-Ft -X fetch), physical restore:
+	//                     the sandbox starts cold, the data directory is
+	//                     untarred in place, and Postgres crash-recovers over it
+	Format string `yaml:"format,omitempty"`
+	// Database names the DB verification checks connect to for basebackup
+	// restores (a physical restore brings back the whole cluster). Default
+	// "postgres".
+	Database string `yaml:"database,omitempty"`
 }
 
 type From struct {
@@ -252,6 +262,18 @@ func (d *Drill) Validate() error {
 		add("metadata.name %q must be a lowercase DNS label (a-z, 0-9, '-'; max 63 chars) — it is used in file, container and pod names", d.Metadata.Name)
 	}
 	velero := d.Spec.Source.Driver == "velero"
+	switch d.Spec.Source.Format {
+	case "", "dump":
+	case "basebackup":
+		if d.Spec.Source.Driver != "postgres" {
+			add("spec.source.format basebackup is only supported for driver: postgres")
+		}
+	default:
+		add("spec.source.format must be dump or basebackup, got %q", d.Spec.Source.Format)
+	}
+	if d.Spec.Source.Database != "" && d.Spec.Source.Format != "basebackup" {
+		add("spec.source.database is only valid with format: basebackup")
+	}
 	switch d.Spec.Source.Driver {
 	case "postgres", "mysql", "velero":
 	default:

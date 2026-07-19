@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kirilurbonas/FireDrill/pkg/drivers"
+	"github.com/kirilurbonas/FireDrill/pkg/spec"
 )
 
 func init() { drivers.Register(Driver{}) }
@@ -65,7 +66,7 @@ func (Driver) ChecksumQuery(table, column string) string {
 }
 
 // Restore streams a mysqldump SQL file into the sandbox database, timed.
-func (Driver) Restore(ctx context.Context, sb drivers.Sandbox, path string) (*drivers.RestoreResult, error) {
+func (Driver) Restore(ctx context.Context, sb drivers.Sandbox, path string, _ spec.Source) (*drivers.RestoreResult, error) {
 	f, err := os.Open(path) // #nosec G304 -- path comes from the drill spec / fetched backup
 	if err != nil {
 		return nil, fmt.Errorf("opening backup: %w", err)

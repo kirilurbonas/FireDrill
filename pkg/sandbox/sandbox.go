@@ -28,4 +28,9 @@ type Config struct {
 	Name      string        // drill name, used for labels/naming
 	Driver    drivers.Driver
 	Namespace string // kubernetes only; defaults to "firedrill"
+	// ColdStart provisions the container/pod without starting the database
+	// engine (it runs `sleep infinity`). Used for physical restores where
+	// the driver must place the data directory before first start; the
+	// driver is then responsible for starting the engine and waiting ready.
+	ColdStart bool
 }

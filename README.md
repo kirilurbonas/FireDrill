@@ -47,6 +47,18 @@ orders-db      FAILED     1m02s    ✓   ✓    evidence/orders-db-….json
 2 drill(s): 1 verified, 1 failed, 0 errored
 ```
 
+**Physical backups** (`pg_basebackup -Ft -X fetch`): set `format: basebackup` and FireDrill restores the tar into an empty data directory in a cold-started sandbox, lets Postgres crash-recover over the shipped WAL, and runs checks against the restored cluster (`database:` picks which DB):
+
+```yaml
+source:
+  driver: postgres
+  format: basebackup
+  database: payments
+  from: { type: s3, uri: "s3://backups/pg/base.tar" }
+```
+
+(The restored cluster carries the source's users, whose passwords FireDrill doesn't know — inside the throwaway, network-isolated sandbox it switches pg_hba to trust auth. Logical `pg_dump` restores remain the default.)
+
 **S3-compatible stores** (MinIO, Ceph, Wasabi, …): add `endpoint` to the source and FireDrill switches to path-style addressing:
 
 ```yaml

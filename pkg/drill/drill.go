@@ -101,6 +101,9 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 		Name:      d.Metadata.Name,
 		Driver:    driver,
 		Namespace: d.Spec.Sandbox.Namespace,
+		// Physical restores must place the data directory before the engine
+		// first starts.
+		ColdStart: d.Spec.Source.Format == "basebackup",
 	}
 	var sb sandbox.Sandbox
 	switch d.Spec.Sandbox.Provider {
@@ -130,7 +133,7 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	defer cancel()
 
 	// 3. Restore, timed. Restore failure is a drill result, not an execution error.
-	res, restoreErr := driver.Restore(ctx, sb, backup.Path)
+	res, restoreErr := driver.Restore(ctx, sb, backup.Path, d.Spec.Source)
 	if res != nil {
 		e.Measured.RestoreSeconds = res.Duration.Seconds()
 	}
@@ -146,7 +149,11 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	// 4. Verify.
 	var db *sql.DB
 	if restoreErr == nil {
-		db, err = sql.Open(driver.SQLDriver(), driver.DSN(sb))
+		dsn := driver.DSN(sb)
+		if res != nil && res.DSN != "" {
+			dsn = res.DSN // physical restores use the restored cluster's own credentials
+		}
+		db, err = sql.Open(driver.SQLDriver(), dsn)
 		if err != nil {
 			return nil, "", fmt.Errorf("connecting to sandbox: %w", err)
 		}
