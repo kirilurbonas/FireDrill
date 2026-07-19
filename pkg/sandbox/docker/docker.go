@@ -13,6 +13,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"net/netip"
@@ -41,7 +42,7 @@ type Sandbox struct {
 	destroyOnce sync.Once
 	destroyErr  error
 	ttlCancel   context.CancelFunc
-	Destroyed   bool
+	destroyed   atomic.Bool // TTL watchdog writes concurrently with readers
 }
 
 var (
@@ -96,9 +97,14 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		return nil, fmt.Errorf("driver port: %w", err)
 	}
 	containerCfg := &container.Config{
-		Image:        cfg.Image,
-		Env:          cfg.Driver.ContainerEnv(dbUser, password, dbName),
-		Labels:       map[string]string{"firedrill": "sandbox", "firedrill/drill": cfg.Name},
+		Image: cfg.Image,
+		Env:   cfg.Driver.ContainerEnv(dbUser, password, dbName),
+		Labels: map[string]string{
+			"firedrill":       "sandbox",
+			"firedrill/drill": cfg.Name,
+			// GC uses this to reap orphans whose in-process watchdog died.
+			"firedrill.expires-at": time.Now().Add(cfg.TTL).UTC().Format(time.RFC3339),
+		},
 		ExposedPorts: network.PortSet{enginePort: struct{}{}},
 	}
 	if cfg.ColdStart {
@@ -206,7 +212,8 @@ func (s *Sandbox) Exec(ctx context.Context, cmd []string, stdin io.Reader) (int,
 			_ = att.CloseWrite()
 		}()
 	}
-	out, _ := io.ReadAll(att.Reader) // multiplexed stream; fine for diagnostics
+	// Cap captured output: a verbose restore tool must not OOM the drill.
+	out, _ := io.ReadAll(io.LimitReader(att.Reader, 4<<20))
 	insp, err := s.cli.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
 	if err != nil {
 		return -1, string(out), fmt.Errorf("exec inspect: %w", err)
@@ -220,7 +227,7 @@ func (s *Sandbox) HostPort() string   { return s.hostPort }
 func (s *Sandbox) User() string       { return dbUser }
 func (s *Sandbox) Password() string   { return s.password }
 func (s *Sandbox) DB() string         { return dbName }
-func (s *Sandbox) WasDestroyed() bool { return s.Destroyed }
+func (s *Sandbox) WasDestroyed() bool { return s.destroyed.Load() }
 
 // Destroy force-removes the container and network. Idempotent.
 func (s *Sandbox) Destroy(ctx context.Context) error {
@@ -238,7 +245,7 @@ func (s *Sandbox) Destroy(ctx context.Context) error {
 				s.destroyErr = fmt.Errorf("removing network: %w", err)
 			}
 		}
-		s.Destroyed = s.destroyErr == nil
+		s.destroyed.Store(s.destroyErr == nil)
 	})
 	return s.destroyErr
 }

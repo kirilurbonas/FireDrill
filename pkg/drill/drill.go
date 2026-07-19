@@ -69,6 +69,12 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	e.Sandbox.Image = d.Spec.Sandbox.Image
 	e.Controls = d.Spec.Report.Controls
 
+	// The whole drill — including backup fetch, image pull and provisioning,
+	// which run before the sandbox TTL watchdog is armed — is bounded by
+	// TTL + a fetch allowance so nothing can hang indefinitely.
+	ctx, cancelAll := context.WithTimeout(ctx, d.Spec.Sandbox.TTL.Duration+30*time.Minute)
+	defer cancelAll()
+
 	// Velero drills are namespace-scoped: Velero performs the restore into
 	// an ephemeral namespace, so they bypass the engine sandbox machinery.
 	if d.Spec.Source.Driver == "velero" {
@@ -185,6 +191,13 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	return finalize(ctx, d, opts, e, restoreErr, restoreDur, backupAge)
 }
 
+// dataCheckNames are the checks that inspect restored data; a verified
+// verdict requires at least one of them to have passed.
+var dataCheckNames = map[string]bool{
+	"rowCount": true, "checksum": true, "smoke": true, "canary": true,
+	"podsReady": true, "resourceCount": true,
+}
+
 // finalize computes objectives and the verdict, writes + signs the evidence,
 // renders the HTML report, and fans out to sinks. Shared by all drill kinds.
 func finalize(ctx context.Context, d *spec.Drill, opts Options, e *report.Evidence,
@@ -196,6 +209,7 @@ func finalize(ctx context.Context, d *spec.Drill, opts Options, e *report.Eviden
 	e.Measured.RPOMet = backupAge <= d.Spec.Objectives.RPO.Duration
 
 	e.Verified = restoreErr == nil && e.Measured.RTOMet && e.Measured.RPOMet
+	dataProven := false
 	for _, r := range e.Checks {
 		if !r.Passed && !r.Skipped {
 			e.Verified = false
@@ -203,6 +217,15 @@ func finalize(ctx context.Context, d *spec.Drill, opts Options, e *report.Eviden
 		if r.Skipped {
 			e.Verified = false // skipped checks are unproven, not passing
 		}
+		if r.Passed && dataCheckNames[r.Name] {
+			dataProven = true
+		}
+	}
+	// Defense in depth (spec validation also requires a data check): never
+	// claim recovery is verified unless at least one check actually
+	// inspected restored data.
+	if !dataProven {
+		e.Verified = false
 	}
 	if restoreErr != nil {
 		e.Error = restoreErr.Error()

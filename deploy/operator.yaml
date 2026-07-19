@@ -34,13 +34,19 @@ rules:
     verbs: [create]
   - apiGroups: [""]
     resources: [namespaces]
-    verbs: [get, create]
+    verbs: [get, list, create, delete] # delete: velero-drill ephemeral namespaces + gc
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
-    verbs: [get, create]
+    verbs: [get, create, delete]
   - apiGroups: [""]
     resources: [events]
     verbs: [create, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update] # leader election
+  - apiGroups: [velero.io]
+    resources: [restores, backups]
+    verbs: [get, list, create, delete] # velero drills + gc of leftover restores
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -81,12 +87,36 @@ spec:
             httpGet: { path: /readyz, port: health }
           livenessProbe:
             httpGet: { path: /healthz, port: health }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
           volumeMounts:
             - { name: evidence, mountPath: /evidence }
+            - { name: tmp, mountPath: /tmp }
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 65532
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
       volumes:
+        # WARNING: emptyDir means signed evidence is LOST when the pod
+        # restarts. For production, replace with a PVC (below) or rely on
+        # report.sinks to export results.
         - name: evidence
           emptyDir: {}
+        # - name: evidence
+        #   persistentVolumeClaim:
+        #     claimName: firedrill-evidence
+        - name: tmp
+          emptyDir: {}
+# ---
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: firedrill-evidence
+#   namespace: firedrill-system
+# spec:
+#   accessModes: [ReadWriteOnce]
+#   resources: { requests: { storage: 5Gi } }

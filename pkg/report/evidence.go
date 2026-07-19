@@ -58,14 +58,23 @@ func (e *Evidence) Write(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("%s-%s.json", e.Drill, e.FinishedAt.UTC().Format("2006-01-02T15-04-05Z"))
+	// Nanosecond suffix: two runs of the same drill within one second must
+	// never overwrite each other's audit records.
+	name := fmt.Sprintf("%s-%s-%09d.json", e.Drill,
+		e.FinishedAt.UTC().Format("2006-01-02T15-04-05Z"), e.FinishedAt.Nanosecond())
 	path := filepath.Join(dir, name)
 	data, err := Canonical(e)
 	if err != nil {
 		return "", err
 	}
+	// Atomic write (temp + rename): a crash mid-write must never leave a
+	// truncated evidence file that then gets signed.
+	tmp := path + ".tmp"
 	// #nosec G306 -- evidence is meant to be shared with auditors, not secret
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		return "", err
 	}
 	return path, nil

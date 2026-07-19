@@ -65,7 +65,7 @@ func TestE2EOperator(t *testing.T) {
 		EvidenceDir: filepath.Join(dir, "evidence"),
 		Recorder:    mgr.GetEventRecorder("firedrill"),
 	}
-	if err := rec.SetupWithManager(mgr); err != nil {
+	if err := rec.SetupWithManager(mgr, 2); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)

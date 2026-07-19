@@ -6,6 +6,7 @@ package source
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,11 +92,24 @@ func fetchS3(ctx context.Context, from spec.From) (*Backup, error) {
 	}
 	defer func() { _ = obj.Body.Close() }()
 
+	if from.MaxBytes > 0 && obj.ContentLength != nil && *obj.ContentLength > from.MaxBytes {
+		_ = obj.Body.Close()
+		return nil, fmt.Errorf("backup is %d bytes, exceeding maxBytes %d", *obj.ContentLength, from.MaxBytes)
+	}
+
 	tmp, err := os.CreateTemp("", "firedrill-backup-*"+filepath.Ext(key))
 	if err != nil {
 		return nil, err
 	}
-	size, err := tmp.ReadFrom(obj.Body)
+	var body io.Reader = obj.Body
+	if from.MaxBytes > 0 {
+		// +1 so an at-limit stream is distinguishable from an over-limit one.
+		body = io.LimitReader(obj.Body, from.MaxBytes+1)
+	}
+	size, err := io.Copy(tmp, body)
+	if err == nil && from.MaxBytes > 0 && size > from.MaxBytes {
+		err = fmt.Errorf("backup exceeds maxBytes %d", from.MaxBytes)
+	}
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}

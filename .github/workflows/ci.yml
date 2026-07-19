@@ -33,7 +33,18 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: make test
+      - run: go test ./... -count=1 -race -coverprofile=coverage.out
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go test ./pkg/spec -fuzz=FuzzParseAll -fuzztime=30s
 
   e2e:
     runs-on: ubuntu-latest # docker preinstalled — dogfoods a real restore

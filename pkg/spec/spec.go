@@ -73,6 +73,9 @@ type From struct {
 	// Endpoint targets S3-compatible stores (MinIO, Ceph, Wasabi, …);
 	// path-style addressing is used automatically when set.
 	Endpoint string `yaml:"endpoint,omitempty"`
+	// MaxBytes aborts the download if the backup exceeds this size —
+	// a disk-fill guard for shared runners. 0 = unlimited.
+	MaxBytes int64 `yaml:"maxBytes,omitempty"`
 	// Velero sources (driver: velero):
 	Backup    string `yaml:"backup,omitempty"`    // Velero Backup CR name
 	Namespace string `yaml:"namespace,omitempty"` // source namespace the backup covers
@@ -326,6 +329,19 @@ func (d *Drill) Validate() error {
 	if len(d.Spec.Verify) == 0 {
 		add("spec.verify must contain at least one check")
 	}
+	// A drill that never inspects restored data can "verify" an empty
+	// restore — the worst possible false positive. Require at least one
+	// data-proving check.
+	hasDataCheck := false
+	for _, c := range d.Spec.Verify {
+		if c.provesData() {
+			hasDataCheck = true
+			break
+		}
+	}
+	if len(d.Spec.Verify) > 0 && !hasDataCheck {
+		add("spec.verify must include at least one data-proving check (rowCount, checksum, smoke, canary, podsReady or resourceCount) — restoreSucceeded/freshness alone cannot prove the data came back")
+	}
 	for i, c := range d.Spec.Verify {
 		if err := c.validate(); err != nil {
 			add("spec.verify[%d]: %w", i, err)
@@ -411,6 +427,12 @@ func (c *Check) validate() error {
 		return fmt.Errorf("exactly one check type must be set, got %d", n)
 	}
 	return nil
+}
+
+// provesData reports whether the check inspects restored data (as opposed
+// to process metadata like exit status or backup age).
+func (c *Check) provesData() bool {
+	return c.isSQL() || c.isK8s()
 }
 
 func (c *Check) isSQL() bool {

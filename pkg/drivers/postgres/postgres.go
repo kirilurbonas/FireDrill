@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/kirilurbonas/FireDrill/pkg/drivers"
@@ -163,6 +164,12 @@ func (Driver) restoreBasebackup(ctx context.Context, sb drivers.Sandbox, path st
 		code, _, err = sb.Exec(ctx, []string{"psql", "-U", "postgres", "-d", db, "-c", "select 1"}, nil)
 		if err == nil && code == 0 {
 			break
+		}
+		// Fast-fail on startup errors: the background start's exit code is
+		// echo's, so a broken data directory is only visible in the log.
+		if code2, logOut, err2 := sb.Exec(ctx, []string{"sh", "-c",
+			"grep -m1 -E 'FATAL|PANIC' /tmp/firedrill-pg.log 2>/dev/null || true"}, nil); err2 == nil && code2 == 0 && strings.TrimSpace(logOut) != "" {
+			return fail("restored cluster startup", -1, logOut, nil)
 		}
 		time.Sleep(time.Second)
 	}

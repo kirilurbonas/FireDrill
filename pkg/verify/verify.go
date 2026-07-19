@@ -67,25 +67,33 @@ func runOne(ctx context.Context, db *sql.DB, c spec.Check, dc Context) Result {
 
 	case c.RowCount != nil:
 		return dataCheck(dc, "rowCount", func() Result {
-			var n int64
-			if err := db.QueryRowContext(ctx, c.RowCount.Query).Scan(&n); err != nil {
-				return Result{Name: "rowCount", Passed: false, Detail: "query failed: " + err.Error()}
-			}
-			return Result{
-				Name:   "rowCount",
-				Passed: n >= c.RowCount.Min,
-				Detail: fmt.Sprintf("%d rows (min %d)", n, c.RowCount.Min),
-			}
+			return requireDB(db, "rowCount", func() Result {
+				var n int64
+				if err := db.QueryRowContext(ctx, c.RowCount.Query).Scan(&n); err != nil {
+					return Result{Name: "rowCount", Passed: false, Detail: "query failed: " + err.Error()}
+				}
+				return Result{
+					Name:   "rowCount",
+					Passed: n >= c.RowCount.Min,
+					Detail: fmt.Sprintf("%d rows (min %d)", n, c.RowCount.Min),
+				}
+			})
 		})
 
 	case c.Checksum != nil:
-		return dataCheck(dc, "checksum", func() Result { return checksum(ctx, db, c.Checksum, dc.ChecksumQuery) })
+		return dataCheck(dc, "checksum", func() Result {
+			return requireDB(db, "checksum", func() Result { return checksum(ctx, db, c.Checksum, dc.ChecksumQuery) })
+		})
 
 	case c.Smoke != nil:
-		return dataCheck(dc, "smoke", func() Result { return smoke(ctx, db, c.Smoke) })
+		return dataCheck(dc, "smoke", func() Result {
+			return requireDB(db, "smoke", func() Result { return smoke(ctx, db, c.Smoke) })
+		})
 
 	case c.Canary != nil:
-		return dataCheck(dc, "canary", func() Result { return canary(ctx, db, c.Canary) })
+		return dataCheck(dc, "canary", func() Result {
+			return requireDB(db, "canary", func() Result { return canary(ctx, db, c.Canary) })
+		})
 
 	case c.PodsReady != nil:
 		return dataCheck(dc, "podsReady", func() Result { return podsReady(ctx, dc.K8s, dc.Namespace, c.PodsReady) })
@@ -100,6 +108,15 @@ func runOne(ctx context.Context, db *sql.DB, c spec.Check, dc Context) Result {
 func dataCheck(dc Context, name string, run func() Result) Result {
 	if dc.RestoreErr != nil {
 		return Result{Name: name, Skipped: true, Detail: "skipped: restore failed"}
+	}
+	return run()
+}
+
+// requireDB guards SQL checks against a missing database handle — a panic
+// here inside the operator would kill the reconciler and leak the sandbox.
+func requireDB(db *sql.DB, name string, run func() Result) Result {
+	if db == nil {
+		return Result{Name: name, Passed: false, Detail: "no database connection configured for this drill type"}
 	}
 	return run()
 }

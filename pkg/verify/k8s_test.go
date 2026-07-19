@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,16 +30,24 @@ func pod(name string, ready bool) *corev1.Pod {
 }
 
 func TestPodsReady(t *testing.T) {
+	// The stability debounce needs stablePolls consecutive samples at 2s
+	// intervals, so the pass case needs a timeout comfortably above that.
 	cli := fake.NewClientset(pod("a", true), pod("b", true))
-	r := podsReady(context.Background(), cli, "drill", &spec.PodsReadyCheck{Timeout: spec.Duration{Duration: 3 * time.Second}})
-	if !r.Passed {
-		t.Errorf("expected pass: %+v", r)
+	r := podsReady(context.Background(), cli, "drill", &spec.PodsReadyCheck{Timeout: spec.Duration{Duration: 15 * time.Second}})
+	if !r.Passed || !strings.Contains(r.Detail, "stable") {
+		t.Errorf("expected stable pass: %+v", r)
 	}
 
 	cli = fake.NewClientset(pod("a", true), pod("b", false))
 	r = podsReady(context.Background(), cli, "drill", &spec.PodsReadyCheck{Timeout: spec.Duration{Duration: 3 * time.Second}})
 	if r.Passed {
 		t.Errorf("expected fail with unready pod: %+v", r)
+	}
+
+	// Nil client must fail gracefully, never panic.
+	r = podsReady(context.Background(), nil, "drill", &spec.PodsReadyCheck{Timeout: spec.Duration{Duration: time.Second}})
+	if r.Passed {
+		t.Errorf("nil client must fail: %+v", r)
 	}
 
 	// Empty namespace must fail — it proves nothing.

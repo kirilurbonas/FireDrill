@@ -3,14 +3,19 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/kirilurbonas/FireDrill/pkg/drill"
+	"github.com/kirilurbonas/FireDrill/pkg/gc"
 	"github.com/kirilurbonas/FireDrill/pkg/operator"
 	"github.com/kirilurbonas/FireDrill/pkg/report"
 	"github.com/kirilurbonas/FireDrill/pkg/spec"
@@ -30,8 +35,23 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), controlsCmd(), historyCmd(), operatorCmd())
-	if err := root.Execute(); err != nil {
+	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), controlsCmd(), historyCmd(), gcCmd(), operatorCmd())
+
+	// First SIGINT/SIGTERM cancels the context so deferred sandbox teardown
+	// runs; a second signal force-exits.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-sigCh
+		fmt.Fprintln(os.Stderr, "\ninterrupted — tearing down sandboxes (press Ctrl-C again to force quit)")
+		cancel()
+		<-sigCh
+		os.Exit(130)
+	}()
+
+	if err := root.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(exitError)
 	}
@@ -172,17 +192,63 @@ func historyCmd() *cobra.Command {
 	return cmd
 }
 
+func gcCmd() *cobra.Command {
+	var olderThan time.Duration
+	var dryRun, dockerOnly, k8sOnly, force bool
+	cmd := &cobra.Command{
+		Use:   "gc",
+		Short: "Reap orphaned sandboxes left by crashed or killed drills",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			printRes := func(kind string, res *gc.Result, err error) {
+				if err != nil {
+					fmt.Printf("– %s sweep unavailable: %v\n", kind, err)
+					return
+				}
+				for _, r := range res.Reaped {
+					fmt.Printf("✗ reaped %s\n", r)
+				}
+				for _, s := range res.Skipped {
+					fmt.Printf("· kept   %s\n", s)
+				}
+				for _, e := range res.Errors {
+					fmt.Printf("! error  %s\n", e)
+				}
+				if len(res.Reaped)+len(res.Skipped)+len(res.Errors) == 0 {
+					fmt.Printf("· no %s sandboxes found\n", kind)
+				}
+			}
+			if !k8sOnly {
+				res, err := gc.SweepDocker(cmd.Context(), gc.Options{OlderThan: olderThan, DryRun: dryRun, Force: force})
+				printRes("docker", res, err)
+			}
+			if !dockerOnly {
+				res, err := gc.SweepKubernetes(cmd.Context(), gc.Options{OlderThan: olderThan, DryRun: dryRun, Force: force})
+				printRes("kubernetes", res, err)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&olderThan, "older-than", time.Hour, "reap unlabeled sandboxes older than this (labeled ones use their real TTL)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be reaped without deleting")
+	cmd.Flags().BoolVar(&dockerOnly, "docker-only", false, "sweep only Docker")
+	cmd.Flags().BoolVar(&k8sOnly, "k8s-only", false, "sweep only Kubernetes")
+	cmd.Flags().BoolVar(&force, "force", false, "ignore TTL leases and reap anything older than --older-than")
+	return cmd
+}
+
 func operatorCmd() *cobra.Command {
 	var evidenceDir, metricsAddr string
+	var maxConcurrent int
 	cmd := &cobra.Command{
 		Use:   "operator",
 		Short: "Run the Kubernetes operator (reconciles RecoveryDrill resources)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return operator.RunManager(version.Version, evidenceDir, metricsAddr)
+			return operator.RunManager(version.Version, evidenceDir, metricsAddr, maxConcurrent)
 		},
 	}
 	cmd.Flags().StringVar(&evidenceDir, "evidence-dir", "/evidence", "evidence output directory in the operator pod")
 	cmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", ":8080", "controller metrics endpoint")
+	cmd.Flags().IntVar(&maxConcurrent, "max-concurrent-drills", 3, "how many drills may run at once")
 	return cmd
 }
 

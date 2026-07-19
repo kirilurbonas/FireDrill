@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -58,7 +59,7 @@ type Sandbox struct {
 	destroyOnce sync.Once
 	destroyErr  error
 	ttlCancel   context.CancelFunc
-	destroyed   bool
+	destroyed   atomic.Bool // TTL watchdog writes concurrently with readers
 }
 
 var (
@@ -108,20 +109,27 @@ func Provision(ctx context.Context, cfg sandbox.Config) (sb *Sandbox, err error)
 		// directory first, then starts it via Exec.
 		command = []string{"sleep", "infinity"}
 	}
+	// activeDeadlineSeconds is an API-side TTL backstop that survives the
+	// drill process dying (the in-process watchdog cannot).
+	deadlineSecs := int64(cfg.TTL.Seconds()) + 60
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
 			Namespace: ns,
 			Labels:    map[string]string{"app.kubernetes.io/managed-by": "firedrill", "firedrill/sandbox": "true", "firedrill/drill": sanitize(cfg.Name)},
+			Annotations: map[string]string{
+				"firedrill.expires-at": time.Now().Add(cfg.TTL).UTC().Format(time.RFC3339),
+			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
+			RestartPolicy:         corev1.RestartPolicyNever,
+			ActiveDeadlineSeconds: &deadlineSecs,
 			Containers: []corev1.Container{{
 				Name:    "db",
 				Image:   cfg.Image,
 				Command: command,
 				Env:     envVars(cfg.Driver.ContainerEnv(dbUser, password, dbName)),
-				Ports: []corev1.ContainerPort{{ContainerPort: int32(port.IntValue() & 0xffff)}}, // #nosec G115 -- valid TCP port from driver constant
+				Ports:   []corev1.ContainerPort{{ContainerPort: int32(port.IntValue() & 0xffff)}}, // #nosec G115 -- valid TCP port from driver constant
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: ptr(false),
 				},
@@ -229,8 +237,9 @@ func (s *Sandbox) Exec(ctx context.Context, cmd []string, stdin io.Reader) (int,
 	if err != nil {
 		return -1, "", fmt.Errorf("exec setup: %w", err)
 	}
-	var out bytes.Buffer
-	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdin: stdin, Stdout: &out, Stderr: &out})
+	// Cap captured output: a verbose restore tool must not OOM the drill.
+	out := &limitedBuffer{max: 4 << 20}
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdin: stdin, Stdout: out, Stderr: out})
 	if err != nil {
 		var exitErr interface{ ExitStatus() int }
 		if ok := errorAs(err, &exitErr); ok {
@@ -281,7 +290,7 @@ func (s *Sandbox) HostPort() string   { return s.hostPort }
 func (s *Sandbox) User() string       { return dbUser }
 func (s *Sandbox) Password() string   { return s.password }
 func (s *Sandbox) DB() string         { return dbName }
-func (s *Sandbox) WasDestroyed() bool { return s.destroyed }
+func (s *Sandbox) WasDestroyed() bool { return s.destroyed.Load() }
 
 // Destroy force-deletes the pod. The namespace and policy stay (shared).
 func (s *Sandbox) Destroy(ctx context.Context) error {
@@ -297,7 +306,7 @@ func (s *Sandbox) Destroy(ctx context.Context) error {
 		if err != nil && !apierrors.IsNotFound(err) {
 			s.destroyErr = fmt.Errorf("deleting sandbox pod: %w", err)
 		}
-		s.destroyed = s.destroyErr == nil
+		s.destroyed.Store(s.destroyErr == nil)
 	})
 	return s.destroyErr
 }
@@ -341,6 +350,26 @@ func envVars(env []string) []corev1.EnvVar {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// limitedBuffer keeps at most max bytes and silently discards the rest —
+// exec output is diagnostics, not data.
+type limitedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	if remaining := l.max - l.buf.Len(); remaining > 0 {
+		if len(p) > remaining {
+			l.buf.Write(p[:remaining])
+		} else {
+			l.buf.Write(p)
+		}
+	}
+	return len(p), nil // report full write so the stream keeps draining
+}
+
+func (l *limitedBuffer) String() string { return l.buf.String() }
 
 func errorAs[T any](err error, target *T) bool {
 	for err != nil {

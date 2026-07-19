@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,12 +47,12 @@ type Drill struct {
 	destroyOnce sync.Once
 	destroyErr  error
 	ttlCancel   context.CancelFunc
-	destroyed   bool
+	destroyed   atomic.Bool
 }
 
 // Clients exposes the typed client for verify checks.
 func (d *Drill) Clients() kubernetes.Interface { return d.cli }
-func (d *Drill) WasDestroyed() bool            { return d.destroyed }
+func (d *Drill) WasDestroyed() bool            { return d.destroyed.Load() }
 
 // Prepare validates the backup exists and completed, records its age, and
 // creates the ephemeral target namespace with a deny-egress NetworkPolicy.
@@ -98,6 +99,9 @@ func Prepare(ctx context.Context, drillName, backup, sourceNS string, ttl time.D
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   d.TargetNS,
 			Labels: map[string]string{"app.kubernetes.io/managed-by": "firedrill", "firedrill/sandbox": "true"},
+			Annotations: map[string]string{
+				"firedrill.expires-at": time.Now().Add(ttl).UTC().Format(time.RFC3339),
+			},
 		},
 	}, metav1.CreateOptions{}); err != nil {
 		return nil, fmt.Errorf("creating ephemeral namespace: %w", err)
@@ -201,7 +205,7 @@ func (d *Drill) Destroy(ctx context.Context) error {
 				d.destroyErr = fmt.Errorf("deleting restore CR: %w", err)
 			}
 		}
-		d.destroyed = d.destroyErr == nil
+		d.destroyed.Store(d.destroyErr == nil)
 	})
 	return d.destroyErr
 }

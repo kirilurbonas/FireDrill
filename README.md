@@ -231,7 +231,18 @@ make e2e     # full drill loops against real Docker + a Kubernetes cluster (kind
 make lint    # golangci-lint (incl. gosec)
 ```
 
-CI runs all of it — lint (with e2e files), `govulncheck`, unit tests, and the Docker/Kubernetes/Velero/operator e2e suites against a kind cluster. Dependabot keeps dependencies current (PRs auto-merge when CI passes). See [CONTRIBUTING.md](CONTRIBUTING.md).
+CI runs all of it — lint (with e2e files), `govulncheck`, unit tests under the race detector, spec-parser fuzzing, and the Docker/Kubernetes/Velero/operator e2e suites against a kind cluster. Releases ship SBOMs. Dependabot keeps dependencies current (PRs auto-merge when CI passes). See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Production readiness
+
+What the hardening pass guarantees, and what to configure:
+
+- **Verdict integrity**: a drill cannot report `RECOVERY VERIFIED` unless at least one data-proving check passed (specs without one are rejected); `podsReady` requires stability across consecutive polls, not one lucky sample.
+- **No leaked sandboxes**: Ctrl-C/SIGTERM triggers teardown; sandboxes carry a `firedrill.expires-at` label and K8s pods an `activeDeadlineSeconds` backstop; `firedrill gc` (also run by the operator at startup) reaps anything a crashed process left behind. Run `firedrill gc` from cron on shared runners.
+- **Operator**: leader-elected (safe rolling updates), configurable `--max-concurrent-drills` (default 3), status updates retried on conflict, errored run-once drills retry with backoff, `MissedSchedule` events surface late windows.
+- **Evidence durability**: atomic writes, collision-proof filenames. In the operator, mount a PVC for `/evidence` (see deploy/operator.yaml) — the default emptyDir loses evidence on pod restart.
+- **Bounded resources**: exec output capped at 4 MiB; optional `from.maxBytes` guards against oversized downloads; every drill is deadline-bounded end to end.
+- **Known limitations**: basebackup restores don't support tablespaces or PITR targets; one drill file = one process (no distributed locking between concurrent CLI invocations of the same drill); MySQL physical backups (XtraBackup) not yet supported.
 
 ## Roadmap
 

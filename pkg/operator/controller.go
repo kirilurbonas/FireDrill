@@ -19,8 +19,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/kirilurbonas/FireDrill/pkg/drill"
@@ -96,6 +98,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if now.Before(nextRun) {
 			return ctrl.Result{RequeueAfter: nextRun.Sub(now)}, nil
 		}
+		// Visibility for operator downtime: this window is being run late.
+		if lag := now.Sub(nextRun); lag > 5*time.Minute && !lastRun.IsZero() {
+			r.event(obj, corev1.EventTypeWarning, "MissedSchedule",
+				fmt.Sprintf("running %s late (scheduled %s)", lag.Round(time.Minute), nextRun.UTC().Format(time.RFC3339)))
+		}
 	}
 
 	// Run the drill now. Drills take minutes; status shows progress.
@@ -104,8 +111,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	e, _, err := drill.Run(ctx, d, drill.Options{EvidenceDir: r.EvidenceDir, Version: r.Version})
 	status := map[string]any{
-		"lastRunTime":        r.now().UTC().Format(time.RFC3339),
-		"observedGeneration": fmt.Sprint(obj.GetGeneration()),
+		"lastRunTime": r.now().UTC().Format(time.RFC3339),
+	}
+	if err == nil {
+		// Only an executed drill (verified or failed) counts as having run
+		// this generation; execution errors must retry (see requeue below).
+		status["observedGeneration"] = fmt.Sprint(obj.GetGeneration())
 	}
 	switch {
 	case err != nil:
@@ -136,6 +147,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, perr
 	}
 
+	if err != nil {
+		// Execution error (infra, not a failed verdict): retry with backoff.
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
 	if d.Spec.Schedule != "" {
 		sched, _ := cron.ParseStandard(d.Spec.Schedule)
 		return ctrl.Result{RequeueAfter: time.Until(sched.Next(r.now()))}, nil
@@ -150,23 +165,31 @@ func (r *Reconciler) now() time.Time {
 	return time.Now()
 }
 
+// patchStatus merges fields into .status under a conflict-retry loop: with
+// concurrent reconciles a bare read-modify-write loses updates.
 func (r *Reconciler) patchStatus(ctx context.Context, obj *unstructured.Unstructured, fields map[string]any) error {
-	fresh := &unstructured.Unstructured{}
-	fresh.SetGroupVersionKind(GVK)
-	if err := r.Get(ctx, client.ObjectKeyFromObject(obj), fresh); err != nil {
-		return err
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := &unstructured.Unstructured{}
+		fresh.SetGroupVersionKind(GVK)
+		if err := r.Get(ctx, client.ObjectKeyFromObject(obj), fresh); err != nil {
+			return err
+		}
+		existing, _, _ := unstructured.NestedMap(fresh.Object, "status")
+		if existing == nil {
+			existing = map[string]any{}
+		}
+		for k, v := range fields {
+			existing[k] = v
+		}
+		if err := unstructured.SetNestedMap(fresh.Object, existing, "status"); err != nil {
+			return err
+		}
+		return r.Status().Update(ctx, fresh)
+	})
+	if err != nil {
+		log.FromContext(ctx).Error(err, "updating RecoveryDrill status")
 	}
-	existing, _, _ := unstructured.NestedMap(fresh.Object, "status")
-	if existing == nil {
-		existing = map[string]any{}
-	}
-	for k, v := range fields {
-		existing[k] = v
-	}
-	if err := unstructured.SetNestedMap(fresh.Object, existing, "status"); err != nil {
-		return err
-	}
-	return r.Status().Update(ctx, fresh)
+	return err
 }
 
 // drillFromCR converts the CR to the CLI's spec.Drill. The CR spec is JSON;
@@ -225,9 +248,16 @@ func str(obj map[string]any, fields ...string) string {
 	return v
 }
 
-// SetupWithManager registers the controller.
-func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+// SetupWithManager registers the controller. Drills block their worker for
+// minutes, so multiple workers keep one slow drill from starving the fleet's
+// schedules.
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrent int) error {
+	if maxConcurrent < 1 {
+		maxConcurrent = 3
+	}
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(GVK)
-	return ctrl.NewControllerManagedBy(mgr).For(obj).Complete(r)
+	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
+		For(obj).Complete(r)
 }

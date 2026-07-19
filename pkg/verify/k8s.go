@@ -12,22 +12,34 @@ import (
 	"github.com/kirilurbonas/FireDrill/pkg/spec"
 )
 
+// stablePolls is how many consecutive all-ready samples podsReady requires:
+// a crashlooping pod can flash Ready once, and a single sample would turn
+// that into a false "recovery verified".
+const stablePolls = 3
+
 // podsReady waits until every pod in the restored namespace reports Ready
-// (or is Succeeded, for completed jobs). Zero pods is a failure — an empty
-// namespace proves nothing about recovery.
+// (or is Succeeded, for completed jobs) and STAYS ready across consecutive
+// polls. Zero pods is a failure — an empty namespace proves nothing.
 func podsReady(ctx context.Context, cli kubernetes.Interface, ns string, c *spec.PodsReadyCheck) Result {
+	if cli == nil {
+		return Result{Name: "podsReady", Passed: false, Detail: "no kubernetes client configured"}
+	}
 	deadline := time.Now().Add(c.Timeout.Duration)
 	var lastDetail string
+	stable := 0
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return Result{Name: "podsReady", Passed: false, Detail: ctx.Err().Error()}
 		}
 		pods, err := cli.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
+		switch {
+		case err != nil:
+			stable = 0
 			lastDetail = "listing pods: " + err.Error()
-		} else if len(pods.Items) == 0 {
+		case len(pods.Items) == 0:
+			stable = 0
 			lastDetail = "no pods in restored namespace"
-		} else {
+		default:
 			notReady := 0
 			for _, p := range pods.Items {
 				if p.Status.Phase == corev1.PodSucceeded {
@@ -38,10 +50,15 @@ func podsReady(ctx context.Context, cli kubernetes.Interface, ns string, c *spec
 				}
 			}
 			if notReady == 0 {
-				return Result{Name: "podsReady", Passed: true,
-					Detail: fmt.Sprintf("%d pod(s) ready", len(pods.Items))}
+				stable++
+				if stable >= stablePolls {
+					return Result{Name: "podsReady", Passed: true,
+						Detail: fmt.Sprintf("%d pod(s) ready (stable over %d checks)", len(pods.Items), stablePolls)}
+				}
+			} else {
+				stable = 0
+				lastDetail = fmt.Sprintf("%d/%d pod(s) not ready", notReady, len(pods.Items))
 			}
-			lastDetail = fmt.Sprintf("%d/%d pod(s) not ready", notReady, len(pods.Items))
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -63,6 +80,9 @@ func podIsReady(p *corev1.Pod) bool {
 
 // resourceCount asserts a minimum number of restored objects of one kind.
 func resourceCount(ctx context.Context, cli kubernetes.Interface, ns string, c *spec.ResourceCountCheck) Result {
+	if cli == nil {
+		return Result{Name: "resourceCount", Passed: false, Detail: "no kubernetes client configured"}
+	}
 	var n int
 	var err error
 	opts := metav1.ListOptions{}

@@ -5,3 +5,4 @@
 *.test
 coverage.out
 .DS_Store
+/firedrill
