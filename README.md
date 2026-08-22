@@ -98,10 +98,11 @@ Every drill writes `evidence/<drill>-<timestamp>.json` plus a detached `.sig` en
 
 ```
 $ firedrill verify-evidence evidence/payments-db-2026-07-08T19-25-12Z.json
-✓ signature valid — evidence is intact
+✓ signature valid — evidence is intact (signer 6f4217d4954eed18)
+✓ attestation valid (in-toto/DSSE, key from signature envelope)
 ```
 
-Auditors can verify with `--public-key ~/.config/firedrill/firedrill.pub` to additionally pin the signing key.
+A bundle carries its own signer key, so it verifies on any machine — an auditor needs nothing installed but the binary. That proves the evidence has not been altered; to also prove *who* signed it, pin the key with `--public-key firedrill.pub`, which fails on anything signed by a different key.
 
 With `report.html: true`, a self-contained HTML report (`<evidence>.html`) is written next to the JSON — shareable with anyone who won't read JSON.
 

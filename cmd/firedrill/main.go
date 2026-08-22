@@ -456,38 +456,30 @@ func verifyEvidenceCmd() *cobra.Command {
 					return fmt.Errorf("%w: %s", err, pubPath)
 				}
 			}
-			if err := report.Verify(args[0], trusted); err != nil {
-				return err
-			}
-			fmt.Println("✓ signature valid — evidence is intact")
-
-			// Attestation verification needs the public key; fall back to the
-			// default key dir when --public-key wasn't given.
-			att := trusted
-			if att == nil {
-				dir := keyDir
-				if dir == "" {
-					var err error
-					dir, err = report.DefaultKeyDir()
-					if err != nil {
-						return err
-					}
-				}
-				var err error
-				att, err = report.LoadPublicKey(dir)
-				if err != nil {
-					fmt.Println("– attestation not checked (no public key available)")
-					return nil
+			// The default key directory is only a last resort; evidence
+			// carries its own signer key, so a bundle verifies anywhere.
+			dir := keyDir
+			if dir == "" && pubPath == "" {
+				if d, err := report.DefaultKeyDir(); err == nil {
+					dir = d
 				}
 			}
-			if _, err := os.Stat(args[0] + ".intoto.jsonl"); err != nil {
-				fmt.Println("– no attestation present (pre-v0.6 evidence)")
-				return nil
-			}
-			if err := report.VerifyAttestation(args[0], att); err != nil {
+			res, err := report.VerifyBundle(args[0], trusted, dir)
+			if err != nil {
 				return err
 			}
-			fmt.Println("✓ attestation valid (in-toto/DSSE)")
+			out := cmd.OutOrStdout()
+			if res.SignerFingerprint != "" {
+				fmt.Fprintf(out, "✓ signature valid — evidence is intact (signer %s)\n", res.SignerFingerprint)
+			} else {
+				fmt.Fprintln(out, "✓ signature valid — evidence is intact")
+			}
+			if res.AttestationChecked {
+				fmt.Fprintf(out, "✓ attestation valid (in-toto/DSSE, key from %s)\n", res.KeySource)
+			}
+			for _, n := range res.Notes {
+				fmt.Fprintf(out, "– %s\n", n)
+			}
 			return nil
 		},
 	}
