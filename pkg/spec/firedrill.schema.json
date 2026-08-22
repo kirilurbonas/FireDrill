@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/kirilurbonas/FireDrill/main/pkg/spec/firedrill.schema.json",
+  "title": "FireDrill RecoveryDrill",
+  "description": "A recovery drill: restore a real backup into a disposable sandbox, prove the data came back, and emit signed evidence.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "firedrill.dev/v1" },
+    "kind": { "const": "RecoveryDrill" },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Lowercase DNS label — it is used in evidence file, container and pod names.",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["objectives", "source", "sandbox", "verify"],
+      "additionalProperties": false,
+      "properties": {
+        "schedule": {
+          "type": "string",
+          "description": "Cron expression, used by the Kubernetes operator; ignored by the CLI."
+        },
+        "objectives": {
+          "type": "object",
+          "required": ["rto", "rpo"],
+          "additionalProperties": false,
+          "properties": {
+            "rto": { "$ref": "#/$defs/duration", "description": "The restore must complete within this." },
+            "rpo": { "$ref": "#/$defs/duration", "description": "The backup must be younger than this." }
+          }
+        },
+        "source": {
+          "type": "object",
+          "required": ["driver", "from"],
+          "additionalProperties": false,
+          "properties": {
+            "driver": {
+              "enum": ["postgres", "mysql", "mongodb", "velero"],
+              "description": "Which engine the backup came from."
+            },
+            "format": {
+              "enum": ["dump", "basebackup", "archive"],
+              "description": "Artifact kind: dump (logical, default), basebackup (physical Postgres tar), archive (mongodump --archive)."
+            },
+            "database": {
+              "type": "string",
+              "description": "Which restored database the checks query. Physical Postgres restores and MongoDB archives bring back more than one."
+            },
+            "from": {
+              "type": "object",
+              "required": ["type"],
+              "additionalProperties": false,
+              "properties": {
+                "type": { "enum": ["file", "s3", "velero"] },
+                "uri": {
+                  "type": "string",
+                  "description": "Path or s3://bucket/key. With select, a directory or s3://bucket/prefix/."
+                },
+                "select": {
+                  "enum": ["latest"],
+                  "description": "Pick one object out of the prefix/directory — the newest by modification time."
+                },
+                "match": {
+                  "type": "string",
+                  "description": "Glob over the object's base name, e.g. payments-*.dump.gz. Requires select.",
+                  "examples": ["payments-*.dump.gz"]
+                },
+                "credentialsRef": {
+                  "type": "string",
+                  "description": "Named external credential source (an AWS shared-config profile). Secrets are never inlined."
+                },
+                "region": { "type": "string" },
+                "endpoint": {
+                  "type": "string",
+                  "description": "S3-compatible endpoint (MinIO, Ceph, Wasabi); switches to path-style addressing.",
+                  "examples": ["http://minio.internal:9000"]
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Abort if the stored artifact exceeds this size. 0 = unlimited."
+                },
+                "maxUncompressedBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Decompression-bomb guard. 0 means 100x maxBytes when that is set, unlimited otherwise."
+                },
+                "backup": { "type": "string", "description": "Velero Backup CR name (driver: velero)." },
+                "namespace": { "type": "string", "description": "Source namespace the Velero backup covers." }
+              }
+            }
+          }
+        },
+        "sandbox": {
+          "type": "object",
+          "required": ["provider", "ttl"],
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "enum": ["docker", "kubernetes"] },
+            "image": { "type": "string", "description": "Engine image the sandbox runs, e.g. postgres:16.10-alpine." },
+            "ttl": { "$ref": "#/$defs/duration", "description": "Hard teardown guardrail — the sandbox is force-removed past this." },
+            "namespace": { "type": "string", "description": "Kubernetes only; default \"firedrill\"." }
+          }
+        },
+        "verify": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Checks run against the restored data. At least one must be data-proving (rowCount, checksum, smoke, canary, podsReady, resourceCount).",
+          "items": { "$ref": "#/$defs/check" }
+        },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sign": { "type": "boolean", "description": "Sign the evidence (ed25519) and write an in-toto/DSSE attestation." },
+            "html": { "type": "boolean", "description": "Also write a shareable <evidence>.html report." },
+            "controls": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Compliance controls this drill evidences.",
+              "examples": [["ISO27001-A.8.13", "SOC2-A1.2"]]
+            },
+            "dir": { "type": "string", "description": "Evidence output directory; default ./evidence." },
+            "sinks": { "type": "array", "items": { "$ref": "#/$defs/sink" } }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "description": "Go duration, e.g. 30s, 15m, 24h.",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+    },
+    "check": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "restoreSucceeded": { "type": "object", "maxProperties": 0, "description": "The restore process completed." },
+        "freshness": {
+          "type": "object",
+          "required": ["maxAge"],
+          "additionalProperties": false,
+          "properties": { "maxAge": { "$ref": "#/$defs/duration" } }
+        },
+        "rowCount": {
+          "type": "object",
+          "required": ["query"],
+          "additionalProperties": false,
+          "properties": {
+            "query": { "type": "string", "description": "Engine-dialect expression returning a number." },
+            "min": { "type": "integer", "description": "The count must be at least this." }
+          }
+        },
+        "checksum": {
+          "type": "object",
+          "required": ["table", "column"],
+          "additionalProperties": false,
+          "properties": {
+            "table": { "type": "string", "description": "Table, or collection for mongodb." },
+            "column": { "type": "string", "description": "Column, or field for mongodb." },
+            "expect": { "type": "string", "description": "Pin to a known checksum; empty records it only." }
+          }
+        },
+        "smoke": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sql": { "type": "string", "description": "SQL query (postgres, mysql)." },
+            "query": { "type": "string", "description": "Engine-dialect query; use this for mongodb." },
+            "expectRows": {
+              "type": "string",
+              "description": "Row assertion, e.g. \">=1\", \"==0\". Default \">=1\".",
+              "pattern": "^(>=|<=|==|>|<)\\s*[0-9]+$"
+            }
+          }
+        },
+        "canary": {
+          "type": "object",
+          "required": ["expect"],
+          "additionalProperties": false,
+          "description": "A sentinel planted before the backup must restore byte-exact — ransomware-encrypted or silently corrupted backups cannot reproduce it.",
+          "properties": {
+            "sql": { "type": "string" },
+            "query": { "type": "string" },
+            "expect": { "type": "string", "description": "The exact expected value. Never written into evidence." }
+          }
+        },
+        "podsReady": {
+          "type": "object",
+          "required": ["timeout"],
+          "additionalProperties": false,
+          "description": "Velero drills: every restored pod reaches Ready.",
+          "properties": { "timeout": { "$ref": "#/$defs/duration" } }
+        },
+        "resourceCount": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "description": "Velero drills: restored objects of this kind actually came back.",
+          "properties": {
+            "kind": { "enum": ["deployments", "statefulsets", "services", "configmaps", "secrets", "pods"] },
+            "min": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "sink": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "description": "Where the result is exported after evidence is written. Sink failures are warnings, never drill failures.",
+      "properties": {
+        "type": { "enum": ["prometheus", "pushgateway", "slack", "webhook"] },
+        "textfileDir": { "type": "string", "description": "prometheus: node_exporter textfile-collector directory." },
+        "url": { "type": "string", "description": "pushgateway: base URL." },
+        "webhookEnv": { "type": "string", "description": "slack: env var holding the incoming-webhook URL." },
+        "urlEnv": { "type": "string", "description": "webhook: env var holding the endpoint URL." },
+        "onlyFailures": { "type": "boolean", "description": "Stay quiet unless a drill fails." }
+      }
+    }
+  }
+}

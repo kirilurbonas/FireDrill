@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kirilurbonas/FireDrill/main/pkg/spec/firedrill.schema.json
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata:
+  name: payments-db
+spec:
+  objectives:
+    rto: 15m                  # the restore must complete within this
+    rpo: 24h                  # the backup must be younger than this
+  source:
+    driver: postgres
+    from:
+      type: file
+      uri: ./payments.dump    # pg_dump output; .gz/.zst are decompressed for you
+      # Point at a prefix instead and FireDrill drills the newest backup:
+      # type: s3
+      # uri: s3://acme-backups/payments/
+      # select: latest
+      # match: "payments-*.dump.gz"
+      # credentialsRef: backup-ro   # AWS profile; secrets never live in this file
+      # region: eu-west-1
+  sandbox:
+    provider: docker
+    image: postgres:16.10-alpine   # match your production major version
+    ttl: 30m                       # hard teardown guardrail
+  verify:
+    - restoreSucceeded: {}
+    - freshness: { maxAge: 24h }
+    # At least one check must actually inspect the restored data — an exit
+    # code cannot tell you an empty database from a recovered one.
+    - rowCount: { query: "select count(*) from ledger", min: 1 }
+    - checksum: { table: ledger, column: id }
+    # - smoke:  { sql: "select 1 from accounts where status='active' limit 1", expectRows: ">=1" }
+    # Plant this row in production before backups run, and every drill proves
+    # the backup restored byte-exact:
+    # - canary: { sql: "select token from firedrill_canary", expect: "fd-canary-2f8a91c4" }
+  report:
+    sign: true
+    html: true
+    # controls: [ISO27001-A.8.13, SOC2-A1.2]
+    # sinks:
+    #   - { type: prometheus, textfileDir: /var/lib/node_exporter/textfile }
+    #   - { type: slack, webhookEnv: SLACK_WEBHOOK_URL, onlyFailures: true }

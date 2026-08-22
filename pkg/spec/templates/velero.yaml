@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kirilurbonas/FireDrill/main/pkg/spec/firedrill.schema.json
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata:
+  name: shop-ns
+spec:
+  objectives:
+    rto: 20m
+    rpo: 24h
+  source:
+    driver: velero
+    from:
+      type: velero
+      backup: shop-nightly    # Velero Backup CR name
+      namespace: shop         # source namespace it covers
+  sandbox:
+    provider: kubernetes      # the restore lands in an ephemeral namespace
+    ttl: 20m
+  verify:
+    - restoreSucceeded: {}
+    - freshness: { maxAge: 24h }
+    - podsReady: { timeout: 5m }                    # every restored pod reaches Ready
+    - resourceCount: { kind: deployments, min: 1 }  # objects actually came back
+  report:
+    sign: true
+    html: true

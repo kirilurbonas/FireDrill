@@ -8,7 +8,7 @@
 
 FireDrill restores your real backups into a disposable, isolated sandbox, verifies the data actually came back intact, measures the true recovery time, and emits signed, audit-grade evidence — then destroys the sandbox. It answers the question every backup tool quietly dodges: *if today were the disaster, would you actually get your data back — and how long would it take?*
 
-FireDrill **does not back anything up**. It is the verification layer on top of whatever backup you already run (`pg_dump`, `mysqldump`, Velero, pgBackRest, RDS snapshots, …): backup-agnostic recovery verification with audit-grade proof. Postgres, MySQL and Velero (Kubernetes namespaces) are supported today; the driver interface is built for more.
+FireDrill **does not back anything up**. It is the verification layer on top of whatever backup you already run (`pg_dump`, `mysqldump`, Velero, pgBackRest, RDS snapshots, …): backup-agnostic recovery verification with audit-grade proof. Postgres, MySQL, MongoDB and Velero (Kubernetes namespaces) are supported today; the driver interface is built for more.
 
 ## Demo
 
@@ -29,6 +29,8 @@ Requirements: Docker running locally. No Postgres client needed on the host — 
 ```sh
 make build                        # builds bin/firedrill
 ./bin/firedrill keygen            # one-time: create the evidence-signing keypair
+./bin/firedrill init --driver postgres   # scaffold a spec for your own backups
+./bin/firedrill schema -o firedrill.schema.json   # optional: editor autocomplete
 ./examples/make-demo-backup.sh    # generate a realistic demo pg_dump
 ./bin/firedrill validate -f examples/firedrill.yaml
 ./bin/firedrill run payments-db -f examples/firedrill.yaml
@@ -36,6 +38,8 @@ make build                        # builds bin/firedrill
 ```
 
 Exit codes: `0` recovery verified · `1` drill ran but recovery not verified · `2` drill could not execute.
+
+`firedrill init` scaffolds a commented spec for `postgres`, `mysql`, `mongodb` or `velero`. Every example carries a `# yaml-language-server: $schema=…` modeline, so editors complete and validate `firedrill.yaml` as you type — `firedrill schema` prints the schema if you would rather vendor it.
 
 **Fleets**: a drill file can contain multiple drills as YAML documents (`---`). `firedrill run <name>` picks one; `firedrill run --all` runs everything and prints a scorecard:
 
@@ -64,6 +68,18 @@ source:
 ```yaml
 from: { type: s3, uri: "s3://backups/pg/latest.dump", endpoint: "http://minio.internal:9000" }
 ```
+
+**Timestamped, compressed backups** — i.e. what your pipeline actually writes. Point the source at a prefix (or a local directory) and FireDrill drills the newest matching object; gzip, zstd and bzip2 artifacts are decompressed transparently:
+
+```yaml
+from:
+  type: s3
+  uri: s3://acme-backups/payments/     # a prefix, not one key
+  select: latest                       # newest object wins
+  match: "payments-*.dump.gz"          # optional glob on the file name
+```
+
+No cron job rewriting the spec every night, and no pre-expanding a 40 GB dump: S3 downloads are decompressed as they stream. Evidence records the artifact that was actually selected, so an auditor never has to guess which backup a run proved. `maxUncompressedBytes` caps expansion (default: 100x `maxBytes`) — a runner should not fill its disk because someone pointed a drill at the wrong object.
 
 ## How it works
 
@@ -138,6 +154,59 @@ WHEN (UTC)         DRILL          RESULT  RESTORE  RTO RPO  TREND
 2026-07-13 03:00   payments-db    FAILED  9m02s    ✗   ✓    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
 ```
 
+## Drills in CI
+
+A drill that only ever ran on someone's laptop proves nothing next quarter. The action runs drills in any workflow — it verifies the release download against its `checksums.txt` before executing it:
+
+```yaml
+- uses: kirilurbonas/FireDrill@v0.11.0
+  with:
+    file: firedrill.yaml
+    all: "true"
+    gate-max-age: 48h     # fail unless every drill has verified in 48h
+```
+
+`firedrill gate` is the enforcement half, usable with or without the action. `controls` reports what happened; `gate` fails the build when recovery stops being proven:
+
+```sh
+firedrill gate --from-spec firedrill.yaml --max-age 24h --require-signed
+```
+
+```
+DRILL                     LAST RUN (UTC)     LAST VERIFIED      SIGNED  STATUS
+payments-db               2026-08-22 03:04   2026-08-22 03:04   ✓       ok
+orders-db                 2026-07-24 03:02   2026-07-24 03:02   ✓       FAIL: last verified run was 29d ago (max 24h)
+ledger-db                 —                  —                  —       FAIL: no evidence — has this drill run at all?
+
+3 drill(s): 1 ok, 2 failing
+```
+
+That last row is the point. A report can only describe drills that ran; naming the subjects — `--from-spec`, `--drill`, `--control` — catches the drill that quietly stopped running months ago, which is exactly the one you find out about during an incident. Exit codes match `run` (`0` clean, `1` violations, `2` could not execute), and `--format json` feeds a dashboard.
+
+See [docs/ci.md](docs/ci.md) for the full action reference and a nightly workflow.
+
+## MongoDB
+
+`mongodump --archive` backups drill like any other. MongoDB has no `database/sql` driver, so checks are mongosh expressions evaluated inside the sandbox — `db` is bound to `source.database`, and the same check types apply:
+
+```yaml
+source:
+  driver: mongodb
+  format: archive
+  database: shop                  # which restored database the checks query
+  from: { type: file, uri: ./shop.archive.gz }
+sandbox: { provider: docker, image: mongo:8, ttl: 30m }
+verify:
+  - rowCount: { query: "db.ledger.countDocuments({})", min: 1000 }
+  - checksum: { table: ledger, column: id }        # collection, field
+  - canary:   { query: "db.firedrill_canary.findOne().token", expect: "fd-canary-2f8a91c4" }
+```
+
+`checksum` is an order-independent md5 over sorted values, computed inside the container, so a large collection never crosses the exec boundary. The restore excludes `admin.*` and `config.*`: restoring the source's user catalog over the sandbox's own credentials would lock the drill out of the data it just restored. The sandbox image must ship the MongoDB Database Tools — the official `mongo:8` image does.
+
+Try it: `./examples/make-demo-mongo-backup.sh && ./bin/firedrill run shop-mongo -f examples/firedrill-mongodb.yaml`.
+
+
 ## Kubernetes
 
 Two levels of Kubernetes support:
@@ -187,7 +256,7 @@ Exported (per drill): `firedrill_drill_verified`, `firedrill_restore_duration_se
 
 A ready-made Grafana dashboard (verification history, RTO/RPO trends, time-since-last-drill) ships at [deploy/grafana-dashboard.json](deploy/grafana-dashboard.json) — import it and point it at your Prometheus datasource.
 
-## Slack notifications
+## Notifications
 
 Add a `slack` sink to get drill outcomes in a channel. The webhook URL is read from an environment variable — it never appears in the spec:
 
@@ -195,9 +264,12 @@ Add a `slack` sink to get drill outcomes in a channel. The webhook URL is read f
 report:
   sinks:
     - { type: slack, webhookEnv: SLACK_WEBHOOK_URL, onlyFailures: true }
+    - { type: webhook, urlEnv: DRILL_WEBHOOK, onlyFailures: true }
 ```
 
 `onlyFailures: true` keeps the channel quiet until a drill actually fails — usually what you want for the 3 a.m. pager channel.
+
+The `webhook` sink POSTs the evidence JSON itself, with the outcome in an `X-FireDrill-Event: drill.verified|drill.failed` header — enough for Teams, Discord, PagerDuty or an internal service to route on, and for a receiver to store the record verbatim.
 
 ## Guardrails
 
@@ -208,7 +280,8 @@ report:
 | "Restore ran" ≠ "data is back" | Data-level checks: row counts, checksums, user smoke SQL — not just exit codes |
 | Secrets leaking into evidence | Credentials referenced by name (`credentialsRef` → AWS profile), never inlined or persisted |
 | Corrupt/garbage backups passing | A failed restore fails the drill; dependent checks report `SKIP`, never false `PASS` |
-| Secrets in process lists | Database passwords reach in-sandbox tooling via environment, never argv |
+| Secrets in process lists | Database passwords reach in-sandbox tooling via environment or a config file, never argv |
+| A backup that fills the runner's disk | `maxBytes` caps the transfer; `maxUncompressedBytes` (default 100x) caps expansion |
 
 See [SECURITY.md](SECURITY.md) for the full security model and how to report vulnerabilities.
 
@@ -231,7 +304,7 @@ make e2e     # full drill loops against real Docker + a Kubernetes cluster (kind
 make lint    # golangci-lint (incl. gosec)
 ```
 
-CI runs all of it — lint (with e2e files), `govulncheck`, unit tests under the race detector, spec-parser fuzzing, and the Docker/Kubernetes/Velero/operator e2e suites against a kind cluster. Releases ship SBOMs. Dependabot keeps dependencies current (PRs auto-merge when CI passes). See [CONTRIBUTING.md](CONTRIBUTING.md).
+CI runs all of it — lint (with e2e files), `govulncheck`, unit tests under the race detector, spec-parser fuzzing, and the Docker/Kubernetes/MongoDB/Velero/operator e2e suites against a kind cluster. Releases ship SBOMs. Dependabot keeps dependencies current (PRs auto-merge when CI passes). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Production readiness
 
@@ -242,11 +315,11 @@ What the hardening pass guarantees, and what to configure:
 - **Operator**: leader-elected (safe rolling updates), configurable `--max-concurrent-drills` (default 3), status updates retried on conflict, errored run-once drills retry with backoff, `MissedSchedule` events surface late windows.
 - **Evidence durability**: atomic writes, collision-proof filenames. In the operator, mount a PVC for `/evidence` (see deploy/operator.yaml) — the default emptyDir loses evidence on pod restart.
 - **Bounded resources**: exec output capped at 4 MiB; optional `from.maxBytes` guards against oversized downloads; every drill is deadline-bounded end to end.
-- **Known limitations**: basebackup restores don't support tablespaces or PITR targets; one drill file = one process (no distributed locking between concurrent CLI invocations of the same drill); MySQL physical backups (XtraBackup) not yet supported.
+- **Known limitations**: basebackup restores don't support tablespaces or PITR targets; one drill file = one process (no distributed locking between concurrent CLI invocations of the same drill); MySQL physical backups (XtraBackup) and MongoDB oplog/point-in-time restores not yet supported; `select: latest` needs list permission on the prefix.
 
 ## Roadmap
 
-Next up: cloud sandboxes (Terraform/RDS). See [firedrill-plan.md](firedrill-plan.md).
+Next up: cloud sandboxes (Terraform/RDS), MongoDB point-in-time restores, and age/GPG-encrypted backups. See [firedrill-plan.md](firedrill-plan.md).
 
 ## License
 

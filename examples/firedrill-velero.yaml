@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kirilurbonas/FireDrill/main/pkg/spec/firedrill.schema.json
 # Velero drill: restore a namespace backup into an ephemeral namespace and
 # verify the workloads came back. Set up a demo environment with
 # examples/velero/setup-velero-kind.sh.

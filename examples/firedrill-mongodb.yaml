@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/kirilurbonas/FireDrill/main/docs/firedrill.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kirilurbonas/FireDrill/main/pkg/spec/firedrill.schema.json
 apiVersion: firedrill.dev/v1
 kind: RecoveryDrill
 metadata:

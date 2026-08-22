@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,8 +36,8 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), controlsCmd(), gateCmd(),
-		historyCmd(), gcCmd(), operatorCmd())
+	root.AddCommand(initCmd(), runCmd(), validateCmd(), schemaCmd(), keygenCmd(), verifyEvidenceCmd(),
+		controlsCmd(), gateCmd(), historyCmd(), gcCmd(), operatorCmd())
 
 	// First SIGINT/SIGTERM cancels the context so deferred sandbox teardown
 	// runs; a second signal force-exits.
@@ -56,6 +57,56 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(exitError)
 	}
+}
+
+func initCmd() *cobra.Command {
+	var driver, out string
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Write a starter drill spec you can fill in",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			doc, err := spec.Template(driver)
+			if err != nil {
+				return err
+			}
+			if _, err := os.Stat(out); err == nil && !force {
+				return fmt.Errorf("%s already exists (use --force to overwrite)", out)
+			}
+			if err := os.WriteFile(out, doc, 0o644); err != nil { // #nosec G306 -- a spec is not a secret
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"✓ wrote %s (driver %s)\n  edit the source and checks, then: firedrill validate -f %s\n",
+				out, driver, out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&driver, "driver", "postgres",
+		"engine to scaffold: "+strings.Join(spec.TemplateDrivers(), " | "))
+	cmd.Flags().StringVarP(&out, "output", "o", "firedrill.yaml", "file to write")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing file")
+	return cmd
+}
+
+func schemaCmd() *cobra.Command {
+	var outPath string
+	cmd := &cobra.Command{
+		Use:   "schema",
+		Short: "Print the JSON Schema for firedrill.yaml (editor autocomplete)",
+		Long: "Write the schema next to your spec and add this line at the top of it:\n\n" +
+			"  # yaml-language-server: $schema=./firedrill.schema.json\n\n" +
+			"Editors then complete and validate the spec as you type.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if outPath != "" {
+				return os.WriteFile(outPath, spec.Schema(), 0o644) // #nosec G306 -- a schema is not a secret
+			}
+			_, err := cmd.OutOrStdout().Write(spec.Schema())
+			return err
+		},
+	}
+	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write to file instead of stdout")
+	return cmd
 }
 
 func runCmd() *cobra.Command {

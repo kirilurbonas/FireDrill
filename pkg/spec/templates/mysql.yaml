@@ -1,6 +1,4 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kirilurbonas/FireDrill/main/pkg/spec/firedrill.schema.json
-# MySQL drill example — same shape as the Postgres one, different engine.
-# The backup must be a mysqldump SQL file (plain format).
 apiVersion: firedrill.dev/v1
 kind: RecoveryDrill
 metadata:
@@ -13,7 +11,11 @@ spec:
     driver: mysql
     from:
       type: file
-      uri: ./examples/orders.sql
+      uri: ./orders.sql       # mysqldump output; .gz/.zst are decompressed for you
+      # type: s3
+      # uri: s3://acme-backups/orders/
+      # select: latest
+      # match: "orders-*.sql.gz"
   sandbox:
     provider: docker
     image: mysql:8.4
@@ -21,10 +23,9 @@ spec:
   verify:
     - restoreSucceeded: {}
     - freshness: { maxAge: 24h }
-    - rowCount:  { query: "select count(*) from orders", min: 1000 }
-    - checksum:  { table: orders, column: id }
-    - smoke:     { sql: "select 1 from orders where status='shipped' limit 1", expectRows: ">=1" }
+    - rowCount: { query: "select count(*) from orders", min: 1 }
+    - checksum: { table: orders, column: id }
+    # - canary: { sql: "select token from firedrill_canary", expect: "fd-canary-2f8a91c4" }
   report:
     sign: true
     html: true
-    controls: [ISO27001-A.8.13, SOC2-A1.2]

@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kirilurbonas/FireDrill/main/pkg/spec/firedrill.schema.json
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata:
+  name: shop-mongo
+spec:
+  objectives:
+    rto: 15m
+    rpo: 24h
+  source:
+    driver: mongodb
+    format: archive           # mongodump --archive
+    database: shop            # which restored database the checks query
+    from:
+      type: file
+      uri: ./shop.archive.gz  # --gzip archives are decompressed for you
+      # type: s3
+      # uri: s3://acme-backups/mongo/
+      # select: latest
+      # match: "shop-*.archive.gz"
+  sandbox:
+    provider: docker
+    image: mongo:8            # must ship the MongoDB Database Tools
+    ttl: 30m
+  verify:
+    - restoreSucceeded: {}
+    - freshness: { maxAge: 24h }
+    # Check expressions are mongosh, with `db` bound to source.database.
+    - rowCount: { query: "db.ledger.countDocuments({})", min: 1 }
+    - checksum: { table: ledger, column: id }     # collection, field
+    # - smoke:  { query: "db.accounts.find({status: 'active'}).limit(1)", expectRows: ">=1" }
+    # - canary: { query: "db.firedrill_canary.findOne().token", expect: "fd-canary-2f8a91c4" }
+  report:
+    sign: true
+    html: true
