@@ -90,9 +90,14 @@ runs:
         fi
 
         tar -xzf "$tmp"/*.tar.gz -C "$tmp"
-        install -m 0755 "$tmp/firedrill" /usr/local/bin/firedrill
+        # Install onto the runner's own PATH rather than a system directory,
+        # which is not writable everywhere self-hosted runners run.
+        bindir="${RUNNER_TEMP:-$HOME}/firedrill-bin"
+        mkdir -p "$bindir"
+        install -m 0755 "$tmp/firedrill" "$bindir/firedrill"
+        echo "$bindir" >> "$GITHUB_PATH"
         rm -rf "$tmp"
-        firedrill --version
+        "$bindir/firedrill" --version
 
     - name: Run drill
       id: drill
