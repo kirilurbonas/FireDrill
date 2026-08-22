@@ -33,10 +33,10 @@ inputs:
     default: ""
   signing-key:
     description: >
-      PEM contents of the evidence-signing key, e.g.
-      ${{ secrets.FIREDRILL_SIGNING_KEY }}. Required when the spec sets
-      report.sign — a key generated on the runner would be thrown away, and
-      evidence signed by a throwaway key proves nothing later.
+      PEM contents of the evidence-signing key, supplied from a repository
+      secret. Required when the spec sets report.sign — a key generated on the
+      runner would be thrown away, and evidence signed by a throwaway key
+      proves nothing later. See docs/ci.md.
     default: ""
   fail-on-unverified:
     description: Fail the step when recovery is not verified. Set false to gate later.
