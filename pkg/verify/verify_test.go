@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,13 +69,64 @@ func TestDataChecksSkippedOnRestoreFailure(t *testing.T) {
 }
 
 func TestChecksumIdentifierValidation(t *testing.T) {
-	q := func(table, col string) string { return "select 1" }
-	r := checksum(context.Background(), nil, &spec.ChecksumCheck{Table: "ledger; drop table x", Column: "id"}, q)
+	// A malicious identifier must be rejected before it reaches the engine.
+	r := checksum(context.Background(), &fakeEngine{}, &spec.ChecksumCheck{Table: "ledger; drop table x", Column: "id"})
 	if r.Passed || r.Detail != "invalid table/column identifier" {
 		t.Errorf("expected identifier rejection, got %+v", r)
 	}
-	r = checksum(context.Background(), nil, &spec.ChecksumCheck{Table: "ledger", Column: "id"}, nil)
+	// A SQL engine with no dialect wired reports it rather than passing.
+	r = checksum(context.Background(), &sqlEngine{}, &spec.ChecksumCheck{Table: "ledger", Column: "id"})
 	if r.Passed || r.Detail != "no checksum dialect configured" {
 		t.Errorf("expected nil-dialect rejection, got %+v", r)
+	}
+}
+
+// fakeEngine is a scripted Engine for check-logic tests (no real database).
+type fakeEngine struct {
+	count  int64
+	rows   int
+	scalar string
+	sum    string
+	err    error
+}
+
+func (f *fakeEngine) Count(context.Context, string) (int64, error)   { return f.count, f.err }
+func (f *fakeEngine) Rows(context.Context, string) (int, error)      { return f.rows, f.err }
+func (f *fakeEngine) Scalar(context.Context, string) (string, error) { return f.scalar, f.err }
+func (f *fakeEngine) Checksum(context.Context, string, string) (string, error) {
+	return f.sum, f.err
+}
+
+func TestDataChecksAgainstEngine(t *testing.T) {
+	eng := &fakeEngine{count: 120, rows: 1, scalar: "fd-canary", sum: "abc123"}
+	checks := []spec.Check{
+		{RowCount: &spec.RowCountCheck{Query: "select count(*) from ledger", Min: 100}},
+		{Smoke: &spec.SmokeCheck{SQL: "select 1"}},
+		{Canary: &spec.CanaryCheck{Query: "db.c.findOne().token", Expect: "fd-canary"}},
+		{Checksum: &spec.ChecksumCheck{Table: "ledger", Column: "id", Expect: "abc123"}},
+	}
+	for _, r := range Run(context.Background(), eng, checks, Context{}) {
+		if !r.Passed {
+			t.Errorf("%s: expected pass, got %+v", r.Name, r)
+		}
+	}
+
+	// Below the minimum, wrong sentinel and a checksum drift must all fail.
+	eng = &fakeEngine{count: 3, rows: 0, scalar: "tampered", sum: "deadbeef"}
+	for _, r := range Run(context.Background(), eng, checks, Context{}) {
+		if r.Passed {
+			t.Errorf("%s: expected failure, got %+v", r.Name, r)
+		}
+	}
+	if got := Run(context.Background(), eng, checks[2:3], Context{})[0].Detail; strings.Contains(got, "fd-canary") {
+		t.Errorf("canary detail leaked the sentinel value: %q", got)
+	}
+}
+
+func TestDataChecksWithoutEngine(t *testing.T) {
+	checks := []spec.Check{{RowCount: &spec.RowCountCheck{Query: "select 1", Min: 1}}}
+	r := Run(context.Background(), nil, checks, Context{})[0]
+	if r.Passed || r.Skipped {
+		t.Errorf("a missing engine must fail the check, got %+v", r)
 	}
 }

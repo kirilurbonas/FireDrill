@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -76,6 +77,17 @@ type From struct {
 	// MaxBytes aborts the download if the backup exceeds this size —
 	// a disk-fill guard for shared runners. 0 = unlimited.
 	MaxBytes int64 `yaml:"maxBytes,omitempty"`
+	// MaxUncompressedBytes caps the size after decompression — a
+	// decompression-bomb guard. 0 means 100x MaxBytes when MaxBytes is set,
+	// unlimited otherwise.
+	MaxUncompressedBytes int64 `yaml:"maxUncompressedBytes,omitempty"`
+	// Select turns URI into a prefix (s3) or directory (file) and picks one
+	// object from it. Only "latest" (newest by modification time) is
+	// supported — real backup pipelines write timestamped keys.
+	Select string `yaml:"select,omitempty"`
+	// Match filters candidates by a glob over the object's base name,
+	// e.g. "payments-*.dump.gz". Requires Select.
+	Match string `yaml:"match,omitempty"`
 	// Velero sources (driver: velero):
 	Backup    string `yaml:"backup,omitempty"`    // Velero Backup CR name
 	Namespace string `yaml:"namespace,omitempty"` // source namespace the backup covers
@@ -122,8 +134,19 @@ type ChecksumCheck struct {
 // restored byte-exact — encrypted-at-source (ransomware) or silently
 // corrupted backups cannot reproduce it.
 type CanaryCheck struct {
-	SQL    string `yaml:"sql"`    // must return exactly one row, one column
+	// SQL and Query are aliases: the engine-dialect expression returning
+	// exactly one row, one column. Use `query` for non-SQL engines.
+	SQL    string `yaml:"sql,omitempty"`
+	Query  string `yaml:"query,omitempty"`
 	Expect string `yaml:"expect"` // exact expected value
+}
+
+// Statement returns the engine-dialect expression from either alias.
+func (c *CanaryCheck) Statement() string {
+	if c.Query != "" {
+		return c.Query
+	}
+	return c.SQL
 }
 
 type PodsReadyCheck struct {
@@ -136,8 +159,19 @@ type ResourceCountCheck struct {
 }
 
 type SmokeCheck struct {
-	SQL        string `yaml:"sql"`
+	// SQL and Query are aliases for the engine-dialect expression; use
+	// `query` for non-SQL engines (mongodb).
+	SQL        string `yaml:"sql,omitempty"`
+	Query      string `yaml:"query,omitempty"`
 	ExpectRows string `yaml:"expectRows,omitempty"` // e.g. ">=1", "==0"; default ">=1"
+}
+
+// Statement returns the engine-dialect expression from either alias.
+func (c *SmokeCheck) Statement() string {
+	if c.Query != "" {
+		return c.Query
+	}
+	return c.SQL
 }
 
 type Report struct {
@@ -293,9 +327,23 @@ func (d *Drill) Validate() error {
 		if d.Spec.Source.From.Endpoint != "" && d.Spec.Source.From.Type != "s3" {
 			add("spec.source.from.endpoint is only valid with type: s3")
 		}
+		switch d.Spec.Source.From.Select {
+		case "", "latest":
+		default:
+			add("spec.source.from.select must be latest (got %q)", d.Spec.Source.From.Select)
+		}
+		if d.Spec.Source.From.Match != "" && d.Spec.Source.From.Select == "" {
+			add("spec.source.from.match requires select: latest")
+		}
+		if _, err := path.Match(d.Spec.Source.From.Match, "probe"); err != nil {
+			add("spec.source.from.match %q is not a valid glob: %v", d.Spec.Source.From.Match, err)
+		}
 	case "velero":
 		if !velero {
 			add("spec.source.from.type velero requires driver: velero")
+		}
+		if d.Spec.Source.From.Select != "" || d.Spec.Source.From.Match != "" {
+			add("spec.source.from.select/match are not valid for velero sources")
 		}
 		if d.Spec.Source.From.Backup == "" {
 			add("spec.source.from.backup (Velero Backup name) is required")
@@ -399,14 +447,20 @@ func (c *Check) validate() error {
 	}
 	if c.Smoke != nil {
 		n++
-		if c.Smoke.SQL == "" {
-			return errors.New("smoke.sql is required")
+		if c.Smoke.SQL != "" && c.Smoke.Query != "" {
+			return errors.New("smoke: set either sql or query, not both")
+		}
+		if c.Smoke.Statement() == "" {
+			return errors.New("smoke.sql (or smoke.query) is required")
 		}
 	}
 	if c.Canary != nil {
 		n++
-		if c.Canary.SQL == "" || c.Canary.Expect == "" {
-			return errors.New("canary requires sql and expect")
+		if c.Canary.SQL != "" && c.Canary.Query != "" {
+			return errors.New("canary: set either sql or query, not both")
+		}
+		if c.Canary.Statement() == "" || c.Canary.Expect == "" {
+			return errors.New("canary requires sql (or query) and expect")
 		}
 	}
 	if c.PodsReady != nil {

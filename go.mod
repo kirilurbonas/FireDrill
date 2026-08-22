@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.0
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/klauspost/compress v1.18.0
 	github.com/mattn/go-isatty v0.0.22
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0

@@ -5,7 +5,7 @@ package verify
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -22,9 +22,6 @@ type Context struct {
 	RestoreErr error         // nil if the restore succeeded
 	BackupAge  time.Duration // now - backup mod time
 	RTO        time.Duration // objective, for reporting only
-	// ChecksumQuery builds the engine-dialect checksum query. Identifiers
-	// are validated before this is called.
-	ChecksumQuery func(table, column string) string
 	// K8s + Namespace are set for velero drills; K8s checks run against
 	// the restored ephemeral namespace.
 	K8s       kubernetes.Interface
@@ -39,17 +36,18 @@ type Result struct {
 	Skipped bool   `json:"skipped,omitempty"`
 }
 
-// Run executes every configured check in order. If the restore failed, data
-// checks are reported as skipped rather than misleading failures.
-func Run(ctx context.Context, db *sql.DB, checks []spec.Check, dc Context) []Result {
+// Run executes every configured check in order against the restored engine
+// (nil for drill kinds with no queryable engine, e.g. velero). If the restore
+// failed, data checks are reported as skipped rather than misleading failures.
+func Run(ctx context.Context, eng Engine, checks []spec.Check, dc Context) []Result {
 	results := make([]Result, 0, len(checks))
 	for _, c := range checks {
-		results = append(results, runOne(ctx, db, c, dc))
+		results = append(results, runOne(ctx, eng, c, dc))
 	}
 	return results
 }
 
-func runOne(ctx context.Context, db *sql.DB, c spec.Check, dc Context) Result {
+func runOne(ctx context.Context, eng Engine, c spec.Check, dc Context) Result {
 	switch {
 	case c.RestoreSucceeded != nil:
 		if dc.RestoreErr != nil {
@@ -67,9 +65,9 @@ func runOne(ctx context.Context, db *sql.DB, c spec.Check, dc Context) Result {
 
 	case c.RowCount != nil:
 		return dataCheck(dc, "rowCount", func() Result {
-			return requireDB(db, "rowCount", func() Result {
-				var n int64
-				if err := db.QueryRowContext(ctx, c.RowCount.Query).Scan(&n); err != nil {
+			return requireEngine(eng, "rowCount", func() Result {
+				n, err := eng.Count(ctx, c.RowCount.Query)
+				if err != nil {
 					return Result{Name: "rowCount", Passed: false, Detail: "query failed: " + err.Error()}
 				}
 				return Result{
@@ -82,17 +80,17 @@ func runOne(ctx context.Context, db *sql.DB, c spec.Check, dc Context) Result {
 
 	case c.Checksum != nil:
 		return dataCheck(dc, "checksum", func() Result {
-			return requireDB(db, "checksum", func() Result { return checksum(ctx, db, c.Checksum, dc.ChecksumQuery) })
+			return requireEngine(eng, "checksum", func() Result { return checksum(ctx, eng, c.Checksum) })
 		})
 
 	case c.Smoke != nil:
 		return dataCheck(dc, "smoke", func() Result {
-			return requireDB(db, "smoke", func() Result { return smoke(ctx, db, c.Smoke) })
+			return requireEngine(eng, "smoke", func() Result { return smoke(ctx, eng, c.Smoke) })
 		})
 
 	case c.Canary != nil:
 		return dataCheck(dc, "canary", func() Result {
-			return requireDB(db, "canary", func() Result { return canary(ctx, db, c.Canary) })
+			return requireEngine(eng, "canary", func() Result { return canary(ctx, eng, c.Canary) })
 		})
 
 	case c.PodsReady != nil:
@@ -112,10 +110,10 @@ func dataCheck(dc Context, name string, run func() Result) Result {
 	return run()
 }
 
-// requireDB guards SQL checks against a missing database handle — a panic
-// here inside the operator would kill the reconciler and leak the sandbox.
-func requireDB(db *sql.DB, name string, run func() Result) Result {
-	if db == nil {
+// requireEngine guards data checks against a missing engine — a panic here
+// inside the operator would kill the reconciler and leak the sandbox.
+func requireEngine(eng Engine, name string, run func() Result) Result {
+	if eng == nil {
 		return Result{Name: name, Passed: false, Detail: "no database connection configured for this drill type"}
 	}
 	return run()
@@ -124,18 +122,17 @@ func requireDB(db *sql.DB, name string, run func() Result) Result {
 var identRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
 
 // checksum computes an order-independent checksum over one column of a
-// table, using the driver's dialect. Identifiers are validated (they cannot
-// be bound as SQL params) before interpolation.
-func checksum(ctx context.Context, db *sql.DB, c *spec.ChecksumCheck, query func(table, column string) string) Result {
+// table, using the engine's dialect. Identifiers are validated (they cannot
+// be bound as query params) before they reach the engine.
+func checksum(ctx context.Context, eng Engine, c *spec.ChecksumCheck) Result {
 	if !identRe.MatchString(c.Table) || !identRe.MatchString(c.Column) {
 		return Result{Name: "checksum", Passed: false, Detail: "invalid table/column identifier"}
 	}
-	if query == nil {
-		return Result{Name: "checksum", Passed: false, Detail: "no checksum dialect configured"}
-	}
-	q := query(c.Table, c.Column)
-	var sum string
-	if err := db.QueryRowContext(ctx, q).Scan(&sum); err != nil {
+	sum, err := eng.Checksum(ctx, c.Table, c.Column)
+	if err != nil {
+		if errors.Is(err, errNoChecksumDialect) {
+			return Result{Name: "checksum", Passed: false, Detail: errNoChecksumDialect.Error()}
+		}
 		return Result{Name: "checksum", Passed: false, Detail: "query failed: " + err.Error()}
 	}
 	if c.Expect != "" && sum != c.Expect {
@@ -146,17 +143,9 @@ func checksum(ctx context.Context, db *sql.DB, c *spec.ChecksumCheck, query func
 }
 
 // smoke runs a user query and asserts on the number of returned rows.
-func smoke(ctx context.Context, db *sql.DB, c *spec.SmokeCheck) Result {
-	rows, err := db.QueryContext(ctx, c.SQL)
+func smoke(ctx context.Context, eng Engine, c *spec.SmokeCheck) Result {
+	n, err := eng.Rows(ctx, c.Statement())
 	if err != nil {
-		return Result{Name: "smoke", Passed: false, Detail: "query failed: " + err.Error()}
-	}
-	defer func() { _ = rows.Close() }()
-	n := 0
-	for rows.Next() {
-		n++
-	}
-	if err := rows.Err(); err != nil {
 		return Result{Name: "smoke", Passed: false, Detail: "query failed: " + err.Error()}
 	}
 	expect := c.ExpectRows
@@ -174,9 +163,9 @@ func smoke(ctx context.Context, db *sql.DB, c *spec.SmokeCheck) Result {
 // encrypted or truncated backups cannot reproduce a known token, so this
 // catches corruption that row counts and freshness never would. The exact
 // value is never written to results — evidence must not leak the sentinel.
-func canary(ctx context.Context, db *sql.DB, c *spec.CanaryCheck) Result {
-	var got string
-	if err := db.QueryRowContext(ctx, c.SQL).Scan(&got); err != nil {
+func canary(ctx context.Context, eng Engine, c *spec.CanaryCheck) Result {
+	got, err := eng.Scalar(ctx, c.Statement())
+	if err != nil {
 		return Result{Name: "canary", Passed: false, Detail: "query failed: " + err.Error()}
 	}
 	if got != c.Expect {

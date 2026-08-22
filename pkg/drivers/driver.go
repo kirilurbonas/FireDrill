@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kirilurbonas/FireDrill/pkg/spec"
+	"github.com/kirilurbonas/FireDrill/pkg/verify"
 )
 
 // Sandbox is the subset of a sandbox the driver needs: run commands inside
@@ -37,7 +38,8 @@ type RestoreResult struct {
 	DSN string
 }
 
-// Driver adapts one database engine to the drill loop.
+// Driver adapts one database engine to the drill loop. Every driver also
+// implements exactly one verification path — SQLCapable or Verifier.
 type Driver interface {
 	// Name matches spec.source.driver.
 	Name() string
@@ -53,6 +55,11 @@ type Driver interface {
 	// src carries format/database options for drivers that support
 	// multiple artifact kinds.
 	Restore(ctx context.Context, sb Sandbox, path string, src spec.Source) (*RestoreResult, error)
+}
+
+// SQLCapable is implemented by engines that speak database/sql (postgres,
+// mysql): the drill opens a connection to the sandbox and runs checks over it.
+type SQLCapable interface {
 	// SQLDriver is the database/sql driver name for verification queries.
 	SQLDriver() string
 	// DSN builds a connection string for the sandbox, reachable from the host.
@@ -60,6 +67,15 @@ type Driver interface {
 	// ChecksumQuery returns an order-independent checksum query over one
 	// column, in the engine's dialect. Identifiers are pre-validated.
 	ChecksumQuery(table, column string) string
+}
+
+// Verifier is implemented by engines with no database/sql driver (mongodb):
+// the driver supplies its own query engine, typically running the engine's
+// shell inside the sandbox container.
+type Verifier interface {
+	// Engine returns the query surface used by data checks. The sandbox is
+	// already restored when this is called.
+	Engine(sb Sandbox, src spec.Source) verify.Engine
 }
 
 var registry = map[string]Driver{}

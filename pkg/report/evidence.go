@@ -25,6 +25,13 @@ type Evidence struct {
 		ModTime time.Time `json:"modTime"`
 		AgeSecs float64   `json:"ageSeconds"`
 		Bytes   int64     `json:"bytes"`
+		// ResolvedURI is the artifact discovery actually selected when the
+		// spec URI was a prefix — an auditor must see which backup was drilled.
+		ResolvedURI string `json:"resolvedUri,omitempty"`
+		// Compression and UncompressedBytes describe artifacts FireDrill
+		// expanded before restoring (gzip/zstd/bzip2).
+		Compression       string `json:"compression,omitempty"`
+		UncompressedBytes int64  `json:"uncompressedBytes,omitempty"`
 	} `json:"backup"`
 
 	Objectives struct {

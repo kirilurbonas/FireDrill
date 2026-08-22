@@ -97,6 +97,11 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	e.Backup.ModTime = backup.ModTime.UTC()
 	e.Backup.AgeSecs = backupAge.Seconds()
 	e.Backup.Bytes = backup.Size
+	e.Backup.Compression = backup.Compression
+	e.Backup.UncompressedBytes = backup.UncompressedBytes
+	if backup.ResolvedURI != d.Spec.Source.From.URI {
+		e.Backup.ResolvedURI = backup.ResolvedURI
+	}
 
 	// 2. Provision the isolated sandbox. Destroy is guaranteed via defer and
 	// backstopped by the in-provider TTL watchdog.
@@ -144,32 +149,44 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 		e.Measured.RestoreSeconds = res.Duration.Seconds()
 	}
 	if p != nil {
+		label := backup.ResolvedURI
+		if backup.Compression != "" {
+			label += " (" + backup.Compression + ")"
+		}
 		if restoreErr == nil {
-			p.Step(fmt.Sprintf("restore  %s", d.Spec.Source.From.URI),
+			p.Step(fmt.Sprintf("restore  %s", label),
 				fmt.Sprintf("ok   %s", res.Duration.Round(time.Second)), true)
 		} else {
-			p.Step(fmt.Sprintf("restore  %s", d.Spec.Source.From.URI), "FAIL", false)
+			p.Step(fmt.Sprintf("restore  %s", label), "FAIL", false)
 		}
 	}
 
-	// 4. Verify.
-	var db *sql.DB
+	// 4. Verify. SQL engines are queried over database/sql; engines without
+	// a database/sql driver supply their own query engine.
+	var eng verify.Engine
 	if restoreErr == nil {
-		dsn := driver.DSN(sb)
-		if res != nil && res.DSN != "" {
-			dsn = res.DSN // physical restores use the restored cluster's own credentials
+		switch dv := driver.(type) {
+		case drivers.Verifier:
+			eng = dv.Engine(sb, d.Spec.Source)
+		case drivers.SQLCapable:
+			dsn := dv.DSN(sb)
+			if res != nil && res.DSN != "" {
+				dsn = res.DSN // physical restores use the restored cluster's own credentials
+			}
+			db, err := sql.Open(dv.SQLDriver(), dsn)
+			if err != nil {
+				return nil, "", fmt.Errorf("connecting to sandbox: %w", err)
+			}
+			defer func() { _ = db.Close() }()
+			eng = verify.NewSQL(db, dv.ChecksumQuery)
+		default:
+			return nil, "", fmt.Errorf("driver %s supports no verification path", driver.Name())
 		}
-		db, err = sql.Open(driver.SQLDriver(), dsn)
-		if err != nil {
-			return nil, "", fmt.Errorf("connecting to sandbox: %w", err)
-		}
-		defer func() { _ = db.Close() }()
 	}
-	e.Checks = verify.Run(ctx, db, d.Spec.Verify, verify.Context{
-		RestoreErr:    restoreErr,
-		BackupAge:     backupAge,
-		RTO:           d.Spec.Objectives.RTO.Duration,
-		ChecksumQuery: driver.ChecksumQuery,
+	e.Checks = verify.Run(ctx, eng, d.Spec.Verify, verify.Context{
+		RestoreErr: restoreErr,
+		BackupAge:  backupAge,
+		RTO:        d.Spec.Objectives.RTO.Duration,
 	})
 	if p != nil {
 		for _, r := range e.Checks {
