@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -37,7 +36,7 @@ type ControlReport struct {
 // marked Signed; files that fail signature validation are still listed
 // (auditors should see them) but Signed=false.
 func BuildControlReport(dir string) (*ControlReport, error) {
-	matches, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	files, err := scanEvidence(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -46,18 +45,8 @@ func BuildControlReport(dir string) (*ControlReport, error) {
 		EvidenceDir: dir,
 		Controls:    map[string][]ControlEntry{},
 	}
-	for _, path := range matches {
-		data, err := os.ReadFile(path) // #nosec G304 -- user-designated evidence dir
-		if err != nil {
-			return nil, err
-		}
-		var e Evidence
-		if err := json.Unmarshal(data, &e); err != nil {
-			continue // not an evidence file
-		}
-		if e.Drill == "" {
-			continue
-		}
+	for _, f := range files {
+		path, e := f.Path, f.E
 		entry := ControlEntry{
 			Drill:        e.Drill,
 			FinishedAt:   e.FinishedAt,

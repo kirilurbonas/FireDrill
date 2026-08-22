@@ -295,6 +295,10 @@ func finalize(ctx context.Context, d *spec.Drill, opts Options, e *report.Eviden
 			if serr := notify.Slack(ctx, e, s); serr != nil && p != nil {
 				p.Info("warning: %v", serr)
 			}
+		case "webhook":
+			if serr := notify.Webhook(ctx, e, s); serr != nil && p != nil {
+				p.Info("warning: %v", serr)
+			}
 		default:
 			metricSinks = append(metricSinks, s)
 		}

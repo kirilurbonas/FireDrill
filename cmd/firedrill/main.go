@@ -35,7 +35,8 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), controlsCmd(), historyCmd(), gcCmd(), operatorCmd())
+	root.AddCommand(runCmd(), validateCmd(), keygenCmd(), verifyEvidenceCmd(), controlsCmd(), gateCmd(),
+		historyCmd(), gcCmd(), operatorCmd())
 
 	// First SIGINT/SIGTERM cancels the context so deferred sandbox teardown
 	// runs; a second signal force-exits.
@@ -170,6 +171,78 @@ func controlsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&evidenceDir, "evidence-dir", "evidence", "directory of evidence JSON files")
 	cmd.Flags().StringVar(&format, "format", "markdown", "output format: markdown | json")
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write to file instead of stdout")
+	return cmd
+}
+
+func gateCmd() *cobra.Command {
+	var (
+		evidenceDir, format, fromSpec, by string
+		drillNames, controlNames          []string
+		maxAge                            time.Duration
+		requireSigned, allowUnverified    bool
+	)
+	cmd := &cobra.Command{
+		Use:   "gate",
+		Short: "Fail the build unless recovery has been proven recently",
+		Long: "Gate enforces a recovery SLO over an evidence directory: every drill (or\n" +
+			"compliance control) must have a verified, optionally signed run inside the\n" +
+			"window. Exits 1 on violations, so it can guard a CI job or a cron.\n\n" +
+			"Naming the subjects — with --from-spec, --drill or --control — is what makes\n" +
+			"it a guarantee: a drill that silently stopped running leaves no evidence\n" +
+			"behind to notice.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			subjects := drillNames
+			if by == "control" {
+				subjects = controlNames
+			}
+			if fromSpec != "" {
+				if by == "control" {
+					return fmt.Errorf("--from-spec lists drills; it cannot be combined with --by control")
+				}
+				drills, err := spec.LoadAll(fromSpec)
+				if err != nil {
+					return err
+				}
+				for _, d := range drills {
+					subjects = append(subjects, d.Metadata.Name)
+				}
+			}
+			rep, err := report.Gate(report.GateOptions{
+				Dir:             evidenceDir,
+				MaxAge:          maxAge,
+				By:              by,
+				Subjects:        subjects,
+				RequireSigned:   requireSigned,
+				AllowUnverified: allowUnverified,
+			})
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "text":
+				rep.WriteText(cmd.OutOrStdout())
+			case "json":
+				if err := rep.WriteJSON(cmd.OutOrStdout()); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("unsupported format %q (text|json)", format)
+			}
+			if rep.Violations > 0 {
+				os.Exit(exitFailed)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&evidenceDir, "evidence-dir", "evidence", "directory of evidence JSON files")
+	cmd.Flags().DurationVar(&maxAge, "max-age", 0, "require a verified run newer than this (e.g. 24h, 720h)")
+	cmd.Flags().StringVar(&by, "by", "drill", "what a subject is: drill | control")
+	cmd.Flags().StringVar(&fromSpec, "from-spec", "", "require every drill declared in this spec file")
+	cmd.Flags().StringSliceVar(&drillNames, "drill", nil, "require this drill (repeatable)")
+	cmd.Flags().StringSliceVar(&controlNames, "control", nil, "require this control (repeatable; use with --by control)")
+	cmd.Flags().BoolVar(&requireSigned, "require-signed", false, "require evidence to carry a valid signature")
+	cmd.Flags().BoolVar(&allowUnverified, "allow-unverified", false, "tolerate a failing latest run if a verified one is still in the window")
+	cmd.Flags().StringVar(&format, "format", "text", "output format: text | json")
 	return cmd
 }
 

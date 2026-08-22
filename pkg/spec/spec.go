@@ -185,12 +185,15 @@ type Report struct {
 // Sink is a destination the drill result is exported to after the evidence
 // is written. Sink failures are warnings, never drill failures.
 type Sink struct {
-	Type        string `yaml:"type"`                  // prometheus | pushgateway | slack
+	Type        string `yaml:"type"`                  // prometheus | pushgateway | slack | webhook
 	TextfileDir string `yaml:"textfileDir,omitempty"` // prometheus: node_exporter textfile-collector dir
 	URL         string `yaml:"url,omitempty"`         // pushgateway: base URL, e.g. http://pushgw:9091
 	// WebhookEnv names the environment variable holding the Slack incoming
 	// webhook URL. The URL itself is a secret and never appears in specs.
 	WebhookEnv string `yaml:"webhookEnv,omitempty"`
+	// URLEnv names the environment variable holding a generic webhook
+	// endpoint (Teams, Discord, PagerDuty, anything homegrown).
+	URLEnv string `yaml:"urlEnv,omitempty"`
 	// OnlyFailures suppresses notifications for verified drills.
 	OnlyFailures bool `yaml:"onlyFailures,omitempty"`
 }
@@ -415,8 +418,12 @@ func (d *Drill) Validate() error {
 			if s.WebhookEnv == "" {
 				add("spec.report.sinks[%d]: slack sink requires webhookEnv (name of the env var holding the webhook URL)", i)
 			}
+		case "webhook":
+			if s.URLEnv == "" {
+				add("spec.report.sinks[%d]: webhook sink requires urlEnv (name of the env var holding the endpoint URL)", i)
+			}
 		default:
-			add("spec.report.sinks[%d]: unsupported sink type %q (supported: prometheus, pushgateway, slack)", i, s.Type)
+			add("spec.report.sinks[%d]: unsupported sink type %q (supported: prometheus, pushgateway, slack, webhook)", i, s.Type)
 		}
 	}
 	return errors.Join(errs...)

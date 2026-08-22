@@ -1,10 +1,8 @@
 package report
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -26,20 +24,13 @@ type HistoryEntry struct {
 // LoadHistory reads every evidence file in dir, optionally filtered by
 // drill name, sorted oldest → newest.
 func LoadHistory(dir, drill string) ([]HistoryEntry, error) {
-	matches, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	files, err := scanEvidence(dir)
 	if err != nil {
 		return nil, err
 	}
 	var out []HistoryEntry
-	for _, path := range matches {
-		data, err := os.ReadFile(path) // #nosec G304 -- user-designated evidence dir
-		if err != nil {
-			return nil, err
-		}
-		var e Evidence
-		if err := json.Unmarshal(data, &e); err != nil || e.Drill == "" {
-			continue // not an evidence file
-		}
+	for _, f := range files {
+		path, e := f.Path, f.E
 		if drill != "" && e.Drill != drill {
 			continue
 		}

@@ -1,0 +1,46 @@
+# Nightly recovery drill. Copy into .github/workflows/ of the repo that owns
+# your backups, point `file` at your drill spec, and give the job credentials
+# that can *read* the backup bucket — FireDrill never writes to a source.
+name: recovery-drill
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # 03:00 UTC, after the nightly backup lands
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write         # only needed for the OIDC role assumption below
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest   # Docker is preinstalled; the sandbox runs here
+    steps:
+      - uses: actions/checkout@v7
+
+      # Read-only credentials for the backup bucket. Any auth method works —
+      # FireDrill uses the standard AWS credential chain.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/firedrill-backup-ro
+          aws-region: eu-west-1
+
+      # Evidence from previous runs, so the gate below can see history and
+      # `firedrill history` has a trend to show.
+      - uses: actions/cache@v4
+        with:
+          path: evidence
+          key: firedrill-evidence-${{ github.run_id }}
+          restore-keys: firedrill-evidence-
+
+      - uses: kirilurbonas/FireDrill@v0.11.0
+        with:
+          file: firedrill.yaml
+          all: "true"
+          gate-max-age: 48h     # fail if any drill has no verified run in 48h
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-evidence
+          path: evidence/       # signed JSON + .sig + in-toto attestation + HTML

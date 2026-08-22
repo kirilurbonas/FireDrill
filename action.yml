@@ -1,0 +1,142 @@
+name: FireDrill
+description: Restore a real backup into a disposable sandbox, prove recovery, and emit signed evidence.
+branding:
+  icon: shield
+  color: red
+
+inputs:
+  version:
+    description: FireDrill release to run ("latest" or e.g. "0.11.0").
+    default: latest
+  file:
+    description: Drill spec file.
+    default: firedrill.yaml
+  drill:
+    description: Name of the drill to run. Ignored when `all` is true.
+    default: ""
+  all:
+    description: Run every drill in the file and print a scorecard.
+    default: "false"
+  evidence-dir:
+    description: Where evidence is written.
+    default: evidence
+  args:
+    description: Extra arguments appended to `firedrill run`.
+    default: ""
+  gate-max-age:
+    description: >
+      When set (e.g. 24h), run `firedrill gate` afterwards and fail unless every
+      drill in the spec has a verified run inside the window.
+    default: ""
+  gate-args:
+    description: Extra arguments appended to `firedrill gate` (e.g. --require-signed).
+    default: ""
+  fail-on-unverified:
+    description: Fail the step when recovery is not verified. Set false to gate later.
+    default: "true"
+  token:
+    description: Token used to look up the release assets.
+    default: ${{ github.token }}
+
+outputs:
+  verified:
+    description: "true when every drill that ran verified recovery"
+    value: ${{ steps.drill.outputs.verified }}
+  evidence-dir:
+    description: Directory the evidence was written to
+    value: ${{ inputs.evidence-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install firedrill
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "$(uname -m)" in
+          x86_64) arch=amd64 ;;
+          aarch64|arm64) arch=arm64 ;;
+          *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
+        esac
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+        if [ "$VERSION" = "latest" ]; then
+          ref="latest"
+        else
+          ref="tags/v${VERSION#v}"
+        fi
+        api="repos/kirilurbonas/FireDrill/releases/$ref"
+
+        tmp=$(mktemp -d)
+        # Resolve assets through the API rather than guessing file names.
+        gh api "$api" --jq '.assets[].browser_download_url' > "$tmp/urls"
+        archive=$(grep -iE "_${os}_${arch}\.tar\.gz$" "$tmp/urls" | head -1)
+        sums=$(grep -E "checksums\.txt$" "$tmp/urls" | head -1)
+        if [ -z "$archive" ]; then
+          echo "no FireDrill release asset for ${os}/${arch} in $api" >&2
+          exit 1
+        fi
+
+        curl -fsSL "$archive" -o "$tmp/$(basename "$archive")"
+        if [ -n "$sums" ]; then
+          curl -fsSL "$sums" -o "$tmp/checksums.txt"
+          # A tampered or truncated download must never be executed.
+          (cd "$tmp" && sha256sum --check --ignore-missing checksums.txt)
+        else
+          echo "::warning::release publishes no checksums.txt — download not verified"
+        fi
+
+        tar -xzf "$tmp"/*.tar.gz -C "$tmp"
+        install -m 0755 "$tmp/firedrill" /usr/local/bin/firedrill
+        rm -rf "$tmp"
+        firedrill --version
+
+    - name: Run drill
+      id: drill
+      shell: bash
+      env:
+        FILE: ${{ inputs.file }}
+        DRILL: ${{ inputs.drill }}
+        ALL: ${{ inputs.all }}
+        EVIDENCE_DIR: ${{ inputs.evidence-dir }}
+        EXTRA: ${{ inputs.args }}
+        FAIL_ON_UNVERIFIED: ${{ inputs.fail-on-unverified }}
+      run: |
+        set -uo pipefail
+        target=()
+        if [ "$ALL" = "true" ]; then
+          target+=(--all)
+        elif [ -n "$DRILL" ]; then
+          target+=("$DRILL")
+        else
+          echo "set either the 'drill' input or 'all: true'" >&2
+          exit 2
+        fi
+        # shellcheck disable=SC2086
+        firedrill run "${target[@]}" -f "$FILE" --evidence-dir "$EVIDENCE_DIR" --no-color $EXTRA
+        code=$?
+        if [ $code -eq 0 ]; then
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "verified=false" >> "$GITHUB_OUTPUT"
+        fi
+        # Exit 2 (the drill could not execute) always fails the step.
+        if [ $code -eq 2 ] || { [ $code -ne 0 ] && [ "$FAIL_ON_UNVERIFIED" = "true" ]; }; then
+          exit $code
+        fi
+
+    - name: Gate on recovery freshness
+      if: inputs.gate-max-age != ''
+      shell: bash
+      env:
+        FILE: ${{ inputs.file }}
+        EVIDENCE_DIR: ${{ inputs.evidence-dir }}
+        MAX_AGE: ${{ inputs.gate-max-age }}
+        GATE_ARGS: ${{ inputs.gate-args }}
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC2086
+        firedrill gate --from-spec "$FILE" --evidence-dir "$EVIDENCE_DIR" --max-age "$MAX_AGE" $GATE_ARGS
