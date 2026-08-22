@@ -3,6 +3,8 @@
 package drill_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"os"
@@ -110,6 +112,74 @@ spec:
 	}
 	if e.Backup.AgeSecs > 3600 {
 		t.Errorf("backup age from S3 LastModified looks wrong: %v", e.Backup.AgeSecs)
+	}
+
+	// Discovery over a prefix: what a nightly pipeline actually leaves behind
+	// is timestamped, gzipped keys — the newest matching one must be drilled.
+	bigger := "create table ledger (id bigserial primary key);\n" +
+		"insert into ledger select from generate_series(1, 3000);\n"
+	// Ordered oldest-first: selection is by LastModified, so the upload
+	// sequence is the fixture and must not depend on map iteration order.
+	for _, up := range []struct{ key, body string }{
+		{"pg/nightly/payments-2026-08-21.sql.gz", dump},
+		{"pg/nightly/payments-2026-08-22.sql.gz", bigger},
+	} {
+		key, body := up.key, up.body
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		if _, err := zw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cli.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String("backups"), Key: aws.String(key), Body: bytes.NewReader(buf.Bytes()),
+		}); err != nil {
+			t.Fatalf("uploading %s: %v", key, err)
+		}
+		// LastModified drives selection; space the uploads so the ordering
+		// is unambiguous.
+		time.Sleep(1100 * time.Millisecond)
+	}
+
+	doc2 := fmt.Sprintf(`
+apiVersion: firedrill.dev/v1
+kind: RecoveryDrill
+metadata: { name: e2e-s3-latest }
+spec:
+  objectives: { rto: 10m, rpo: 24h }
+  source:
+    driver: postgres
+    from:
+      type: s3
+      uri: "s3://backups/pg/nightly/"
+      endpoint: "%s"
+      select: latest
+      match: "payments-*.sql.gz"
+  sandbox: { provider: docker, image: "postgres:16.10-alpine", ttl: 10m }
+  verify:
+    - restoreSucceeded: {}
+    - rowCount: { query: "select count(*) from ledger", min: 3000 }
+  report: { sign: false }
+`, endpoint)
+
+	d2, err := spec.Parse(strings.NewReader(doc2))
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	e2, _, err := drill.Run(ctx, d2, drill.Options{EvidenceDir: filepath.Join(dir, "evidence"), Version: "e2e-test"})
+	if err != nil {
+		t.Fatalf("drill.Run (prefix): %v", err)
+	}
+	if !e2.Verified {
+		t.Fatalf("prefix drill not verified: %+v", e2)
+	}
+	if e2.Backup.ResolvedURI != "s3://backups/pg/nightly/payments-2026-08-22.sql.gz" {
+		t.Errorf("selected the wrong object: %q", e2.Backup.ResolvedURI)
+	}
+	if e2.Backup.Compression != "gzip" {
+		t.Errorf("gzip artifact not recorded as compressed: %+v", e2.Backup)
 	}
 	_ = os.Unsetenv("AWS_REGION")
 }

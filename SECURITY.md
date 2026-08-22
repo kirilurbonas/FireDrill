@@ -23,7 +23,10 @@ FireDrill is designed so that a drill can never endanger production:
   every code path plus an independent TTL watchdog.
 - **No secrets in process lists.** Database passwords are passed to
   in-sandbox tooling via environment (`MYSQL_PWD` derived inside the
-  container), never argv.
+  container; `process.env` for mongosh) or via a config file the sandbox
+  writes with a shell builtin (the MongoDB Database Tools), never argv.
+  Notification endpoints are named by env var (`webhookEnv`, `urlEnv`), so
+  webhook URLs stay out of specs, evidence and logs.
 - **Tamper-evident evidence.** Evidence records are signed with ed25519
   twice over: a detached `.sig` envelope and an in-toto/DSSE attestation
   (`.intoto.jsonl`) verifiable with `cosign verify-blob-attestation`.
@@ -34,10 +37,16 @@ FireDrill is designed so that a drill can never endanger production:
   value that must restore byte-exact; encrypted-at-source or silently
   corrupted backups fail the drill. The sentinel is never recorded in
   evidence or logs.
-- **User-supplied SQL runs in the sandbox only.** `rowCount`/`smoke`
+- **User-supplied queries run in the sandbox only.** `rowCount`/`smoke`
   queries are user-authored by design and execute exclusively against the
-  disposable restored copy. Checksum identifiers are validated before
-  interpolation.
+  disposable restored copy — SQL through `database/sql`, mongosh
+  expressions inside the container. Checksum identifiers are validated
+  before interpolation.
+- **Bounded downloads.** `maxBytes` caps the transferred artifact and
+  `maxUncompressedBytes` (default 100x) caps what a compressed artifact may
+  expand to, so a wrong prefix or a crafted archive cannot fill the runner's
+  disk. Prefix discovery (`select: latest`) needs list permission on the
+  prefix — still read-only.
 
 ## Supply chain
 

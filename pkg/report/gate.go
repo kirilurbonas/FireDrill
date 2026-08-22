@@ -1,6 +1,7 @@
 package report
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +25,10 @@ type GateOptions struct {
 	Subjects []string
 	// RequireSigned fails a subject whose evidence carries no valid signature.
 	RequireSigned bool
+	// PublicKey, when set, additionally pins the signer: evidence signed by
+	// any other key does not count. Without it a signature only proves the
+	// evidence was not tampered with after the fact.
+	PublicKey ed25519.PublicKey
 	// AllowUnverified accepts a subject whose latest run failed, as long as
 	// a verified run still falls inside MaxAge.
 	AllowUnverified bool
@@ -162,9 +167,13 @@ func evaluate(name string, runs []evidenceFile, opts GateOptions, now time.Time)
 	if verified != nil {
 		sigOn = *verified
 	}
-	st.Signed = Verify(sigOn.Path, nil) == nil
+	st.Signed = Verify(sigOn.Path, opts.PublicKey) == nil
 	if opts.RequireSigned && !st.Signed {
-		st.Violations = append(st.Violations, "evidence is unsigned or its signature does not validate")
+		msg := "evidence is unsigned or its signature does not validate"
+		if opts.PublicKey != nil {
+			msg += " against the pinned key"
+		}
+		st.Violations = append(st.Violations, msg)
 	}
 	return st
 }

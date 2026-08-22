@@ -10,8 +10,10 @@ build:
 test:
 	go test ./... -count=1
 
+# -timeout: the e2e suite provisions real containers and clusters; the
+# default 10m per package is not enough for the drill package's fleet.
 e2e:
-	go test ./... -count=1 -tags e2e -run E2E -v
+	go test ./... -count=1 -tags e2e -run E2E -v -timeout 40m
 
 lint:
 	golangci-lint run ./...

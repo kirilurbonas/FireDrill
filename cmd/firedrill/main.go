@@ -228,6 +228,7 @@ func controlsCmd() *cobra.Command {
 func gateCmd() *cobra.Command {
 	var (
 		evidenceDir, format, fromSpec, by string
+		pubPath                           string
 		drillNames, controlNames          []string
 		maxAge                            time.Duration
 		requireSigned, allowUnverified    bool
@@ -258,8 +259,20 @@ func gateCmd() *cobra.Command {
 					subjects = append(subjects, d.Metadata.Name)
 				}
 			}
+			var trusted ed25519.PublicKey
+			if pubPath != "" {
+				data, err := os.ReadFile(pubPath) // #nosec G304 -- user-supplied key path
+				if err != nil {
+					return err
+				}
+				if trusted, err = report.ParsePublicKeyPEM(data); err != nil {
+					return fmt.Errorf("%w: %s", err, pubPath)
+				}
+				requireSigned = true
+			}
 			rep, err := report.Gate(report.GateOptions{
 				Dir:             evidenceDir,
+				PublicKey:       trusted,
 				MaxAge:          maxAge,
 				By:              by,
 				Subjects:        subjects,
@@ -292,6 +305,7 @@ func gateCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&drillNames, "drill", nil, "require this drill (repeatable)")
 	cmd.Flags().StringSliceVar(&controlNames, "control", nil, "require this control (repeatable; use with --by control)")
 	cmd.Flags().BoolVar(&requireSigned, "require-signed", false, "require evidence to carry a valid signature")
+	cmd.Flags().StringVar(&pubPath, "public-key", "", "require evidence signed by this key (PEM); implies --require-signed")
 	cmd.Flags().BoolVar(&allowUnverified, "allow-unverified", false, "tolerate a failing latest run if a verified one is still in the window")
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text | json")
 	return cmd

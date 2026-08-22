@@ -50,8 +50,10 @@ must keep happening, and exits non-zero when it doesn't:
 # Every drill in the spec must have a verified run in the last 24 hours.
 firedrill gate --from-spec firedrill.yaml --max-age 24h
 
-# Auditor mode: the evidence must also carry a valid signature.
+# Auditor mode: the evidence must also be signed — and, with --public-key,
+# signed by the key you trust rather than merely self-consistent.
 firedrill gate --from-spec firedrill.yaml --max-age 720h --require-signed
+firedrill gate --from-spec firedrill.yaml --max-age 720h --public-key firedrill.pub
 
 # Per compliance control instead of per drill.
 firedrill gate --by control --control ISO27001-A.8.13 --max-age 720h
@@ -72,7 +74,8 @@ A subject fails the gate when:
   you, because a drill that silently stopped running leaves nothing behind;
 - **its latest run did not verify recovery** (relax with `--allow-unverified`);
 - **its most recent verified run has aged out** of `--max-age`;
-- **`--require-signed`** is set and that evidence carries no valid signature.
+- **`--require-signed`** is set and that evidence carries no valid signature
+  (`--public-key <pem>` goes further and pins *which* key must have signed it).
 
 Naming the subjects is what makes it a guarantee. `--from-spec` (every drill
 in a spec file), `--drill` and `--control` all assert existence; without them

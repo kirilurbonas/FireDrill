@@ -170,6 +170,7 @@ A drill that only ever ran on someone's laptop proves nothing next quarter. The 
 
 ```sh
 firedrill gate --from-spec firedrill.yaml --max-age 24h --require-signed
+firedrill gate --by control --control ISO27001-A.8.13 --max-age 720h --public-key firedrill.pub
 ```
 
 ```
