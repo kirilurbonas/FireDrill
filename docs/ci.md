@@ -7,7 +7,7 @@ check that fails the build when it stops being true.
 ## The GitHub Action
 
 ```yaml
-- uses: kirilurbonas/FireDrill@v0.11.0
+- uses: kirilurbonas/FireDrill@v0.11.1
   with:
     file: firedrill.yaml
     all: "true"
@@ -28,9 +28,36 @@ The action downloads the pinned release, **verifies it against the release's
 | `args` | — | Extra arguments for `firedrill run`. |
 | `gate-max-age` | — | When set, run `firedrill gate --from-spec <file> --max-age <value>`. |
 | `gate-args` | — | Extra arguments for `firedrill gate`, e.g. `--require-signed`. |
+| `signing-key` | — | PEM of the evidence-signing key, from a secret. Required when the spec sets `report.sign`. |
 | `fail-on-unverified` | `true` | Set `false` to collect evidence now and gate in a later job. |
 
 Outputs: `verified` (`true`/`false`) and `evidence-dir`.
+
+### Signing evidence in CI
+
+Every shipped spec sets `report.sign: true`, and signing needs a key. Do not
+generate one on the runner: it is discarded when the job ends, so nothing can
+be verified against it later, and every run would be signed by a different
+stranger. Generate the key once, keep the private half in a secret, and
+distribute the public half to whoever verifies:
+
+```sh
+firedrill keygen                                  # once, on a trusted machine
+gh secret set FIREDRILL_SIGNING_KEY < ~/.config/firedrill/firedrill.key
+```
+
+```yaml
+- uses: kirilurbonas/FireDrill@v0.11.1
+  with:
+    file: firedrill.yaml
+    all: "true"
+    signing-key: ${{ secrets.FIREDRILL_SIGNING_KEY }}
+```
+
+The key is written to a private file under `RUNNER_TEMP` for the duration of
+the job and never lands in evidence, logs, or the workspace. Auditors then
+verify with `firedrill verify-evidence --public-key firedrill.pub`, which
+fails on anything signed by a different key.
 
 The runner needs Docker — GitHub-hosted `ubuntu-latest` has it — plus
 read-only credentials for wherever the backup lives. A complete nightly

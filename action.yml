@@ -31,6 +31,13 @@ inputs:
   gate-args:
     description: Extra arguments appended to `firedrill gate` (e.g. --require-signed).
     default: ""
+  signing-key:
+    description: >
+      PEM contents of the evidence-signing key, e.g.
+      ${{ secrets.FIREDRILL_SIGNING_KEY }}. Required when the spec sets
+      report.sign — a key generated on the runner would be thrown away, and
+      evidence signed by a throwaway key proves nothing later.
+    default: ""
   fail-on-unverified:
     description: Fail the step when recovery is not verified. Set false to gate later.
     default: "true"
@@ -99,6 +106,19 @@ runs:
         rm -rf "$tmp"
         "$bindir/firedrill" --version
 
+    - name: Configure the signing key
+      if: inputs.signing-key != ''
+      shell: bash
+      env:
+        SIGNING_KEY: ${{ inputs.signing-key }}
+      run: |
+        set -euo pipefail
+        dir="${RUNNER_TEMP:-$HOME}/firedrill-keys"
+        mkdir -p "$dir" && chmod 700 "$dir"
+        umask 077
+        printf '%s\n' "$SIGNING_KEY" > "$dir/firedrill.key"
+        echo "FIREDRILL_KEY_DIR=$dir" >> "$GITHUB_ENV"
+
     - name: Run drill
       id: drill
       shell: bash
@@ -120,8 +140,10 @@ runs:
           echo "set either the 'drill' input or 'all: true'" >&2
           exit 2
         fi
+        keyflag=()
+        [ -n "${FIREDRILL_KEY_DIR:-}" ] && keyflag=(--key-dir "$FIREDRILL_KEY_DIR")
         # shellcheck disable=SC2086
-        firedrill run "${target[@]}" -f "$FILE" --evidence-dir "$EVIDENCE_DIR" --no-color $EXTRA
+        firedrill run "${target[@]}" -f "$FILE" --evidence-dir "$EVIDENCE_DIR" --no-color "${keyflag[@]}" $EXTRA
         code=$?
         if [ $code -eq 0 ]; then
           echo "verified=true" >> "$GITHUB_OUTPUT"

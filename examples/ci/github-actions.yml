@@ -33,10 +33,13 @@ jobs:
           key: firedrill-evidence-${{ github.run_id }}
           restore-keys: firedrill-evidence-
 
-      - uses: kirilurbonas/FireDrill@v0.11.0
+      - uses: kirilurbonas/FireDrill@v0.11.1
         with:
           file: firedrill.yaml
           all: "true"
+          # `firedrill keygen` once on a trusted machine, then:
+          #   gh secret set FIREDRILL_SIGNING_KEY < ~/.config/firedrill/firedrill.key
+          signing-key: ${{ secrets.FIREDRILL_SIGNING_KEY }}
           gate-max-age: 48h     # fail if any drill has no verified run in 48h
 
       - if: always()

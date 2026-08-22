@@ -160,10 +160,11 @@ WHEN (UTC)         DRILL          RESULT  RESTORE  RTO RPO  TREND
 A drill that only ever ran on someone's laptop proves nothing next quarter. The action runs drills in any workflow — it verifies the release download against its `checksums.txt` before executing it:
 
 ```yaml
-- uses: kirilurbonas/FireDrill@v0.11.0
+- uses: kirilurbonas/FireDrill@v0.11.1
   with:
     file: firedrill.yaml
     all: "true"
+    signing-key: ${{ secrets.FIREDRILL_SIGNING_KEY }}
     gate-max-age: 48h     # fail unless every drill has verified in 48h
 ```
 
