@@ -168,8 +168,10 @@ func (Driver) restoreBasebackup(ctx context.Context, sb drivers.Sandbox, path st
 		// Fast-fail on startup errors: the background start's exit code is
 		// echo's, so a broken data directory is only visible in the log.
 		if code2, logOut, err2 := sb.Exec(ctx, []string{"sh", "-c",
-			"grep -m1 -E 'FATAL|PANIC' /tmp/firedrill-pg.log 2>/dev/null || true"}, nil); err2 == nil && code2 == 0 && strings.TrimSpace(logOut) != "" {
-			return fail("restored cluster startup", -1, logOut, nil)
+			"grep -E 'FATAL|PANIC' /tmp/firedrill-pg.log 2>/dev/null || true"}, nil); err2 == nil && code2 == 0 {
+			if bad := fatalStartupLine(logOut); bad != "" {
+				return fail("restored cluster startup", -1, bad, nil)
+			}
 		}
 		time.Sleep(time.Second)
 	}
@@ -180,6 +182,41 @@ func (Driver) restoreBasebackup(ctx context.Context, sb drivers.Sandbox, path st
 		DSN: fmt.Sprintf("postgres://postgres@%s:%s/%s?sslmode=disable",
 			sb.Host(), sb.HostPort(), db),
 	}, nil
+}
+
+// transientStartup are FATAL lines Postgres logs while it is still replaying
+// WAL — provoked by this very readiness poll. They mean "not yet", not
+// "broken", and treating them as failures reports a perfectly good backup as
+// unrecoverable.
+var transientStartup = []string{
+	"the database system is not yet accepting connections",
+	"the database system is starting up",
+	"the database system is in recovery mode",
+	"the database system is shutting down",
+	"consistent recovery state has not been yet reached",
+}
+
+// fatalStartupLine returns the first log line that indicates the restored
+// cluster is genuinely broken, or "" when the log holds only transient
+// startup noise.
+func fatalStartupLine(log string) string {
+	for _, line := range strings.Split(log, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, "FATAL") && !strings.Contains(line, "PANIC") {
+			continue
+		}
+		transient := false
+		for _, t := range transientStartup {
+			if strings.Contains(line, t) {
+				transient = true
+				break
+			}
+		}
+		if !transient {
+			return line
+		}
+	}
+	return ""
 }
 
 // detectFormat sniffs the pg_dump custom-format magic ("PGDMP") and rewinds.
