@@ -18,6 +18,7 @@ import (
 
 	"net/netip"
 
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -212,13 +213,19 @@ func (s *Sandbox) Exec(ctx context.Context, cmd []string, stdin io.Reader) (int,
 			_ = att.CloseWrite()
 		}()
 	}
-	// Cap captured output: a verbose restore tool must not OOM the drill.
-	out, _ := io.ReadAll(io.LimitReader(att.Reader, 4<<20))
+	// Docker frames stdout and stderr into one multiplexed stream; demultiplex
+	// it so callers get the command's actual output and not 8-byte headers
+	// interleaved with it. Output is capped — a verbose restore tool must not
+	// OOM the drill.
+	out := &sandbox.LimitedBuffer{Max: sandbox.MaxExecOutput}
+	if _, err := stdcopy.StdCopy(out, out, att.Reader); err != nil {
+		return -1, out.String(), fmt.Errorf("exec output: %w", err)
+	}
 	insp, err := s.cli.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
 	if err != nil {
-		return -1, string(out), fmt.Errorf("exec inspect: %w", err)
+		return -1, out.String(), fmt.Errorf("exec inspect: %w", err)
 	}
-	return insp.ExitCode, string(out), nil
+	return insp.ExitCode, out.String(), nil
 }
 
 // Connection facts for drivers (drivers.Sandbox).

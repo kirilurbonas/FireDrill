@@ -13,6 +13,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver
 
 	"github.com/kirilurbonas/FireDrill/pkg/drivers"
+	_ "github.com/kirilurbonas/FireDrill/pkg/drivers/mongodb"  // register mongodb
 	_ "github.com/kirilurbonas/FireDrill/pkg/drivers/mysql"    // register mysql
 	_ "github.com/kirilurbonas/FireDrill/pkg/drivers/postgres" // register postgres
 	"github.com/kirilurbonas/FireDrill/pkg/metrics"

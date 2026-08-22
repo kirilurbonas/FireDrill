@@ -9,7 +9,6 @@
 package kubernetes
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -238,7 +237,7 @@ func (s *Sandbox) Exec(ctx context.Context, cmd []string, stdin io.Reader) (int,
 		return -1, "", fmt.Errorf("exec setup: %w", err)
 	}
 	// Cap captured output: a verbose restore tool must not OOM the drill.
-	out := &limitedBuffer{max: 4 << 20}
+	out := &sandbox.LimitedBuffer{Max: sandbox.MaxExecOutput}
 	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdin: stdin, Stdout: out, Stderr: out})
 	if err != nil {
 		var exitErr interface{ ExitStatus() int }
@@ -350,26 +349,6 @@ func envVars(env []string) []corev1.EnvVar {
 }
 
 func ptr[T any](v T) *T { return &v }
-
-// limitedBuffer keeps at most max bytes and silently discards the rest —
-// exec output is diagnostics, not data.
-type limitedBuffer struct {
-	buf bytes.Buffer
-	max int
-}
-
-func (l *limitedBuffer) Write(p []byte) (int, error) {
-	if remaining := l.max - l.buf.Len(); remaining > 0 {
-		if len(p) > remaining {
-			l.buf.Write(p[:remaining])
-		} else {
-			l.buf.Write(p)
-		}
-	}
-	return len(p), nil // report full write so the stream keeps draining
-}
-
-func (l *limitedBuffer) String() string { return l.buf.String() }
 
 func errorAs[T any](err error, target *T) bool {
 	for err != nil {

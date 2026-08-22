@@ -2,6 +2,7 @@
 /evidence/
 /dist/
 *.dump
+*.archive.gz
 *.test
 coverage.out
 .DS_Store

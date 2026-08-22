@@ -302,22 +302,33 @@ func (d *Drill) Validate() error {
 		add("metadata.name %q must be a lowercase DNS label (a-z, 0-9, '-'; max 63 chars) — it is used in file, container and pod names", d.Metadata.Name)
 	}
 	velero := d.Spec.Source.Driver == "velero"
+	mongo := d.Spec.Source.Driver == "mongodb"
 	switch d.Spec.Source.Format {
-	case "", "dump":
+	case "":
+	case "dump":
+		if mongo {
+			add("spec.source.format dump is not supported for driver: mongodb (use archive)")
+		}
 	case "basebackup":
 		if d.Spec.Source.Driver != "postgres" {
 			add("spec.source.format basebackup is only supported for driver: postgres")
 		}
+	case "archive":
+		if !mongo {
+			add("spec.source.format archive is only supported for driver: mongodb")
+		}
 	default:
-		add("spec.source.format must be dump or basebackup, got %q", d.Spec.Source.Format)
+		add("spec.source.format must be dump, basebackup or archive, got %q", d.Spec.Source.Format)
 	}
-	if d.Spec.Source.Database != "" && d.Spec.Source.Format != "basebackup" {
-		add("spec.source.database is only valid with format: basebackup")
+	// A physical Postgres restore brings back a whole cluster, and a Mongo
+	// archive its own databases; both need to be told which one to verify.
+	if d.Spec.Source.Database != "" && d.Spec.Source.Format != "basebackup" && !mongo {
+		add("spec.source.database is only valid with format: basebackup or driver: mongodb")
 	}
 	switch d.Spec.Source.Driver {
-	case "postgres", "mysql", "velero":
+	case "postgres", "mysql", "mongodb", "velero":
 	default:
-		add("spec.source.driver: unsupported driver %q (supported: postgres, mysql, velero)", d.Spec.Source.Driver)
+		add("spec.source.driver: unsupported driver %q (supported: postgres, mysql, mongodb, velero)", d.Spec.Source.Driver)
 	}
 	switch d.Spec.Source.From.Type {
 	case "file", "s3":
