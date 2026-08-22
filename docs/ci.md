@@ -137,3 +137,16 @@ The [Kubernetes operator](../README.md#kubernetes) runs drills from a
 `RecoveryDrill` cron schedule inside the cluster, and emits Events plus
 Prometheus metrics. `firedrill gate` still applies — point it at the
 operator's evidence PVC from a CronJob.
+
+## Acceptance test
+
+`uat-drills.sh` is the end-to-end acceptance test for a release: it installs
+the published binary, drills real Postgres, MySQL and MongoDB sources through
+discovery and decompression, checks the failure paths (corrupt backup,
+ransomware canary, missing artifact), verifies evidence the way an auditor
+would, exercises every sink and every `gate` mode, and asserts nothing leaked.
+Run it against a release you are about to trust:
+
+```sh
+./uat-drills.sh          # needs Docker and firedrill on PATH
+```
