@@ -4,6 +4,7 @@ package drill_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -79,6 +80,22 @@ spec:
 	}
 	if !e.Sandbox.Destroyed {
 		t.Error("sandbox was not destroyed")
+	}
+	// The evidence FILE is the audit record — checking the in-memory struct
+	// hid a bug where every written record claimed the sandbox was still up.
+	written, err := os.ReadFile(path) // #nosec G304 -- test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk report.Evidence
+	if err := json.Unmarshal(written, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	if !onDisk.Sandbox.Destroyed {
+		t.Error("written evidence does not record the sandbox as destroyed")
+	}
+	if !onDisk.Verified {
+		t.Error("written evidence does not record the verdict")
 	}
 	if e.Measured.RestoreSeconds <= 0 {
 		t.Error("restore duration not measured")

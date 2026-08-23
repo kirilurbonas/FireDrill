@@ -129,12 +129,17 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	if err != nil {
 		return nil, "", fmt.Errorf("provisioning sandbox: %w", err)
 	}
-	defer func() {
+	// Teardown is idempotent (sync.Once), so it is safe to call explicitly
+	// once verification is done and again from the defer. The explicit call
+	// is what lets the evidence record the sandbox's real fate: written
+	// after teardown rather than before it.
+	teardown := func() {
 		if derr := sb.Destroy(context.Background()); derr != nil && p != nil {
 			p.Info("warning: sandbox teardown: %v", derr)
 		}
 		e.Sandbox.Destroyed = sb.WasDestroyed()
-	}()
+	}
+	defer teardown()
 	if p != nil {
 		p.Step(fmt.Sprintf("provision sandbox  %s %s", d.Spec.Sandbox.Provider, d.Spec.Sandbox.Image),
 			fmt.Sprintf("ok   %.1fs", time.Since(t0).Seconds()), true)
@@ -206,6 +211,10 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	if res != nil {
 		restoreDur = res.Duration
 	}
+	// Destroy before the evidence is written: a signed record claiming the
+	// sandbox is still up — for every drill ever run — is a false statement
+	// about the one guarantee an auditor most wants to see kept.
+	teardown()
 	return finalize(ctx, d, opts, e, restoreErr, restoreDur, backupAge)
 }
 

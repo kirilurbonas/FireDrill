@@ -7,20 +7,23 @@ fails=0
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; fails=$((fails+1)); }
 check() { if [ "$1" = "$2" ]; then pass "$3 (exit $1)"; else fail "$3 (exit $1, want $2)"; fi; }
+# stat(1) differs between GNU and BSD; the UAT runs on both.
+filemode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+filesize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
 
 FD=$(command -v firedrill) || {
   echo "FATAL: firedrill is not installed — the UAT cannot report on a binary that is not there." >&2
   exit 2
 }
 echo "== binary: $FD ($(firedrill --version))"
-cd "$(mktemp -d)"
+cd "$(mktemp -d)" || exit 2
 work=$PWD
 echo "== workdir: $work"
 
 firedrill keygen --dir "$work/keys" >/dev/null || fail "keygen"
 [ -f "$work/keys/firedrill.key" ] && [ -f "$work/keys/firedrill.pub" ] && [ -f "$work/keys/firedrill.cosign.pub" ] \
   && pass "keygen wrote key, pub and cosign pub" || fail "keygen outputs missing"
-perms=$(stat -c %a "$work/keys/firedrill.key")
+perms=$(filemode "$work/keys/firedrill.key")
 [ "$perms" = "600" ] && pass "private key mode 600" || fail "private key mode $perms"
 
 ########## 1. Postgres logical dump, gzipped, discovered by prefix ##########
@@ -52,8 +55,8 @@ rows=$(docker exec uat-pg-src psql -U postgres -d payments -tAc 'select count(*)
 [ "$rows" = "25000" ] && pass "seeded postgres with $rows ledger rows" || fail "postgres seed has '$rows' rows, want 25000"
 # Compare against yesterday's canary-only dump rather than an absolute size:
 # 25k integer rows gzip down to ~14 KB, so a fixed threshold proves nothing.
-sz=$(stat -c %s backups/payments-2026-08-22.dump.gz)
-small=$(stat -c %s backups/payments-2026-08-21.dump.gz)
+sz=$(filesize backups/payments-2026-08-22.dump.gz)
+small=$(filesize backups/payments-2026-08-21.dump.gz)
 [ "$sz" -gt "$((small * 3))" ] && pass "today's dump (${sz}B) is materially bigger than yesterday's canary-only one (${small}B)" \
   || fail "today's dump ${sz}B vs yesterday's ${small}B — seeding or pg_dump failed"
 
@@ -125,18 +128,19 @@ firedrill verify-evidence "$ev" --public-key "$work/keys/firedrill.pub" >/dev/nu
 firedrill keygen --dir "$work/otherkeys2" >/dev/null
 firedrill verify-evidence "$ev" --public-key "$work/otherkeys2/firedrill.pub" >/dev/null 2>&1
 check $? 2 "verify-evidence REJECTS a pinned key that did not sign it"
-python3 - "$ev" <<'PY'
+if python3 - "$ev" <<'PY'
 import json, sys
 e = json.load(open(sys.argv[1]))
 b = e['backup']
-assert b['resolvedUri'].endswith('payments-2026-08-22.dump.gz'), b
+assert b['resolvedUri'].endswith('payments-2026-08-22.dump.gz'), f"resolvedUri={b.get('resolvedUri')}"
 assert b['compression'] == 'gzip', b
 assert b['uncompressedBytes'] > b['bytes'], b
 assert e['verified'] is True
-assert e['sandbox']['destroyed'] is True
-print(f"PASS  evidence records resolvedUri, compression={b['compression']}, "
+assert e['sandbox']['destroyed'] is True, "written evidence does not record the sandbox as destroyed"
+print(f"  resolvedUri recorded, compression={b['compression']}, "
       f"{b['bytes']}B -> {b['uncompressedBytes']}B, sandbox destroyed")
 PY
+then pass "evidence content (resolved artifact, compression, verdict, teardown)"; else fail "evidence content assertions"; fi
 # Tamper detection.
 cp "$ev" tampered.json && cp "$ev.sig" tampered.json.sig
 python3 -c "
@@ -153,9 +157,12 @@ fi
 ########## 3. Sinks ##########
 grep -q 'firedrill_drill_verified{drill="payments-db"} 1' metrics/firedrill-payments-db.prom \
   && pass "prometheus textfile sink" || fail "prometheus sink: $(ls metrics)"
-[ -f /tmp/uat-webhook.json ] && python3 -c "
-import json;d=json.load(open('/tmp/uat-webhook.json'));assert d['drill']=='payments-db';print('PASS  webhook sink received evidence JSON')" \
-  || fail "webhook sink got nothing"
+if [ -f /tmp/uat-webhook.json ] && python3 -c "
+import json;d=json.load(open('/tmp/uat-webhook.json'));assert d['drill']=='payments-db'" 2>/dev/null; then
+  pass "webhook sink received evidence JSON"
+else
+  fail "webhook sink got nothing usable"
+fi
 hdr=$(cat /tmp/uat-webhook-headers.txt 2>/dev/null)
 [ "$hdr" = "drill.verified payments-db application/json" ] && pass "webhook routing headers ($hdr)" || fail "webhook headers: $hdr"
 
@@ -286,8 +293,10 @@ nets=$(docker network ls --filter "name=firedrill-" -q | wc -l | tr -d ' ')
 firedrill gc --dry-run >/dev/null 2>&1; check $? 0 "firedrill gc runs clean"
 
 docker rm -f uat-pg-src uat-my-src uat-mongo-src >/dev/null 2>&1
-cp -r evidence "$GITHUB_WORKSPACE/uat-evidence" 2>/dev/null || true
-cp *.log controls.md "$GITHUB_WORKSPACE/uat-evidence/" 2>/dev/null || true
+if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+  cp -r evidence "$GITHUB_WORKSPACE/uat-evidence" 2>/dev/null || true
+  cp ./*.log controls.md "$GITHUB_WORKSPACE/uat-evidence/" 2>/dev/null || true
+fi
 
 echo
 echo "================ UAT SUMMARY: $fails failure(s) ================"

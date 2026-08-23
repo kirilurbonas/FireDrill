@@ -23,12 +23,15 @@ func runVelero(ctx context.Context, d *spec.Drill, opts Options, e *report.Evide
 	if err != nil {
 		return nil, "", fmt.Errorf("preparing velero drill: %w", err)
 	}
-	defer func() {
+	// Idempotent, and called explicitly below so the evidence records the
+	// namespace's real fate rather than its state before teardown.
+	teardown := func() {
 		if derr := vd.Destroy(context.Background()); derr != nil && p != nil {
 			p.Info("warning: namespace teardown: %v", derr)
 		}
 		e.Sandbox.Destroyed = vd.WasDestroyed()
-	}()
+	}
+	defer teardown()
 
 	e.Backup.URI = fmt.Sprintf("velero://%s (namespace %s)", from.Backup, from.Namespace)
 	e.Backup.ModTime = time.Now().Add(-vd.BackupAge).UTC()
@@ -80,5 +83,6 @@ func runVelero(ctx context.Context, d *spec.Drill, opts Options, e *report.Evide
 		}
 	}
 
+	teardown()
 	return finalize(ctx, d, opts, e, restoreErr, restoreDur, vd.BackupAge)
 }
