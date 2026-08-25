@@ -9,3 +9,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    groups:
+      # One PR a week for workflow actions, not one per action.
+      actions:
+        patterns: ["*"]

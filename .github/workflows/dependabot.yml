@@ -1,0 +1,40 @@
+# Turn on auto-merge for Dependabot PRs so routine updates land once the full
+# gate is green, instead of ageing in the queue.
+#
+# pull_request_target runs with write access, so this workflow deliberately
+# never checks out or executes the PR's code — it only reads metadata and asks
+# GitHub to merge when the required checks pass.
+name: dependabot
+
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dependabot/fetch-metadata@v2
+        id: meta
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Major bumps are reviewed by a human. CI exercises ci.yml on every
+      # push, but release.yml only runs on a tag — so a green run says
+      # nothing about an action that only the release workflow uses.
+      - name: Enable auto-merge for patch and minor updates
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Flag major updates for review
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        run: gh pr comment "$PR_URL" --body "Major update — merging by hand after checking what CI does not cover (release-only actions are not exercised until a tag is pushed)."
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
