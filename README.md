@@ -81,6 +81,25 @@ from:
 
 No cron job rewriting the spec every night, and no pre-expanding a 40 GB dump: S3 downloads are decompressed as they stream. Evidence records the artifact that was actually selected, so an auditor never has to guess which backup a run proved. `maxUncompressedBytes` caps expansion (default: 100x `maxBytes`) — a runner should not fill its disk because someone pointed a drill at the wrong object.
 
+**Encrypted backups** — if your backups are encrypted at rest (they should be), FireDrill decrypts them on the way in. Keys are referenced, never written in the spec:
+
+```yaml
+from:
+  type: s3
+  uri: s3://acme-backups/payments/
+  select: latest
+  match: "payments-*.dump.gz.age"
+  decrypt:
+    type: age                      # age | gpg
+    identityFile: /run/secrets/age.key
+    # identityEnv: FIREDRILL_AGE_KEY     — or from the environment
+    # passphraseEnv: BACKUP_PASSPHRASE   — for passphrase-encrypted artifacts
+```
+
+Decryption happens before decompression, because that is the order pipelines build artifacts in (`pg_dump | gzip | age -r …`). `age` is handled natively, binary or armored; `gpg` streams through the local `gpg`, so existing keyrings, agents and smartcards keep working — set `passphraseEnv` only if the key needs one. Point a drill at an encrypted backup without a `decrypt` block and it says so, rather than handing ciphertext to `pg_restore` and calling the backup corrupt.
+
+The plaintext only ever exists in a private temp file (mode 0600) that is removed when the drill ends, and inside the disposable sandbox. Evidence records *that* the backup was encrypted, never the key.
+
 ## How it works
 
 1. **Declare** recovery targets in `firedrill.yaml` — source backup, restore method, RTO/RPO objectives, checks.
@@ -285,6 +304,7 @@ The `webhook` sink POSTs the evidence JSON itself, with the outcome in an `X-Fir
 | Corrupt/garbage backups passing | A failed restore fails the drill; dependent checks report `SKIP`, never false `PASS` |
 | Secrets in process lists | Database passwords reach in-sandbox tooling via environment or a config file, never argv |
 | A backup that fills the runner's disk | `maxBytes` caps the transfer; `maxUncompressedBytes` (default 100x) caps expansion |
+| Decryption keys leaking | Keys come from a file path or env var, never the spec; plaintext lives in a 0600 temp file removed at teardown, and evidence records only *that* the backup was encrypted |
 
 See [SECURITY.md](SECURITY.md) for the full security model and how to report vulnerabilities.
 
@@ -318,11 +338,11 @@ What the hardening pass guarantees, and what to configure:
 - **Operator**: leader-elected (safe rolling updates), configurable `--max-concurrent-drills` (default 3), status updates retried on conflict, errored run-once drills retry with backoff, `MissedSchedule` events surface late windows.
 - **Evidence durability**: atomic writes, collision-proof filenames. In the operator, mount a PVC for `/evidence` (see deploy/operator.yaml) — the default emptyDir loses evidence on pod restart.
 - **Bounded resources**: exec output capped at 4 MiB; optional `from.maxBytes` guards against oversized downloads; every drill is deadline-bounded end to end.
-- **Known limitations**: basebackup restores don't support tablespaces or PITR targets; one drill file = one process (no distributed locking between concurrent CLI invocations of the same drill); MySQL physical backups (XtraBackup) and MongoDB oplog/point-in-time restores not yet supported; `select: latest` needs list permission on the prefix.
+- **Known limitations**: basebackup restores don't support tablespaces or PITR targets; `decrypt.type: gpg` needs the `gpg` binary on the host running the drill (age needs nothing); one drill file = one process (no distributed locking between concurrent CLI invocations of the same drill); MySQL physical backups (XtraBackup) and MongoDB oplog/point-in-time restores not yet supported; `select: latest` needs list permission on the prefix.
 
 ## Roadmap
 
-Next up: cloud sandboxes (Terraform/RDS), MongoDB point-in-time restores, and age/GPG-encrypted backups. See [firedrill-plan.md](firedrill-plan.md).
+Next up: cloud sandboxes (Terraform/RDS) and MongoDB point-in-time restores. See [firedrill-plan.md](firedrill-plan.md).
 
 ## License
 

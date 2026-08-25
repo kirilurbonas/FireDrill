@@ -16,6 +16,7 @@ spec:
       # uri: s3://acme-backups/orders/
       # select: latest
       # match: "orders-*.sql.gz"
+      # decrypt: { type: age, identityFile: /run/secrets/age.key }
   sandbox:
     provider: docker
     image: mysql:8.4

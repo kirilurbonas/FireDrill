@@ -42,6 +42,14 @@ FireDrill is designed so that a drill can never endanger production:
   disposable restored copy — SQL through `database/sql`, mongosh
   expressions inside the container. Checksum identifiers are validated
   before interpolation.
+- **Encryption keys stay out of the spec.** `decrypt` names a key file or an
+  environment variable; key material is never inlined, logged, or written to
+  evidence — which records only *that* an artifact was encrypted. Decrypted
+  backups are materialized in a temp file created 0600 and removed when the
+  drill ends. On a shared runner, point `TMPDIR` at a tmpfs if plaintext must
+  never touch disk. GPG decryption shells out to the local `gpg` so keyrings,
+  agents and smartcards keep working; passphrases reach it on a dedicated
+  file descriptor, never argv.
 - **Bounded downloads.** `maxBytes` caps the transferred artifact and
   `maxUncompressedBytes` (default 100x) caps what a compressed artifact may
   expand to, so a wrong prefix or a crafted archive cannot fill the runner's

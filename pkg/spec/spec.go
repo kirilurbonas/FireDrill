@@ -81,6 +81,10 @@ type From struct {
 	// decompression-bomb guard. 0 means 100x MaxBytes when MaxBytes is set,
 	// unlimited otherwise.
 	MaxUncompressedBytes int64 `yaml:"maxUncompressedBytes,omitempty"`
+	// Decrypt configures decryption of the fetched artifact. Backups are
+	// commonly encrypted at rest; key material is referenced by path or
+	// environment variable and never inlined here.
+	Decrypt *Decrypt `yaml:"decrypt,omitempty"`
 	// Select turns URI into a prefix (s3) or directory (file) and picks one
 	// object from it. Only "latest" (newest by modification time) is
 	// supported — real backup pipelines write timestamped keys.
@@ -91,6 +95,20 @@ type From struct {
 	// Velero sources (driver: velero):
 	Backup    string `yaml:"backup,omitempty"`    // Velero Backup CR name
 	Namespace string `yaml:"namespace,omitempty"` // source namespace the backup covers
+}
+
+// Decrypt describes how to read an encrypted backup artifact. Decryption
+// happens before decompression, matching how pipelines build them
+// (`pg_dump | gzip | age -r …`).
+type Decrypt struct {
+	Type string `yaml:"type"` // age | gpg
+	// IdentityFile is an age identity file — typically a mounted secret.
+	IdentityFile string `yaml:"identityFile,omitempty"`
+	// IdentityEnv names an environment variable holding an age identity.
+	IdentityEnv string `yaml:"identityEnv,omitempty"`
+	// PassphraseEnv names an environment variable holding the passphrase for
+	// a passphrase-encrypted artifact (age scrypt, or gpg --symmetric).
+	PassphraseEnv string `yaml:"passphraseEnv,omitempty"`
 }
 
 type Sandbox struct {
@@ -352,12 +370,31 @@ func (d *Drill) Validate() error {
 		if _, err := path.Match(d.Spec.Source.From.Match, "probe"); err != nil {
 			add("spec.source.from.match %q is not a valid glob: %v", d.Spec.Source.From.Match, err)
 		}
+		if dec := d.Spec.Source.From.Decrypt; dec != nil {
+			switch dec.Type {
+			case "age":
+				if dec.IdentityFile == "" && dec.IdentityEnv == "" && dec.PassphraseEnv == "" {
+					add("spec.source.from.decrypt: age needs identityFile, identityEnv or passphraseEnv")
+				}
+			case "gpg":
+				// gpg resolves keys through its own keyring/agent, so a
+				// passphrase is the only thing it may need from the spec.
+				if dec.IdentityFile != "" || dec.IdentityEnv != "" {
+					add("spec.source.from.decrypt: gpg uses the local keyring — set passphraseEnv only")
+				}
+			default:
+				add("spec.source.from.decrypt.type must be age or gpg, got %q", dec.Type)
+			}
+		}
 	case "velero":
 		if !velero {
 			add("spec.source.from.type velero requires driver: velero")
 		}
 		if d.Spec.Source.From.Select != "" || d.Spec.Source.From.Match != "" {
 			add("spec.source.from.select/match are not valid for velero sources")
+		}
+		if d.Spec.Source.From.Decrypt != nil {
+			add("spec.source.from.decrypt is not valid for velero sources (Velero handles its own backup storage)")
 		}
 		if d.Spec.Source.From.Backup == "" {
 			add("spec.source.from.backup (Velero Backup name) is required")

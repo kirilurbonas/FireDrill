@@ -34,12 +34,28 @@ type Backup struct {
 	// spec URI when discovery picked one object out of a prefix — evidence
 	// must record which backup was drilled, not which pattern matched it.
 	ResolvedURI string
+	// Encryption is "" for a plaintext artifact, else age/gpg.
+	Encryption string
 	// Compression is "" for a plain artifact, else gzip/zstd/bzip2.
 	Compression string
 	// UncompressedBytes is the expanded size; 0 when not compressed.
 	UncompressedBytes int64
 
 	cleanup func() error
+}
+
+// Layers describes what FireDrill had to undo to read the artifact, e.g.
+// "age, gzip" — shown on the restore line so an operator sees the pipeline
+// their backup actually came through.
+func (b *Backup) Layers() string {
+	var parts []string
+	if b.Encryption != "" {
+		parts = append(parts, b.Encryption)
+	}
+	if b.Compression != "" {
+		parts = append(parts, b.Compression)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // Cleanup removes any temporary download. Safe on nil / no-op sources.
@@ -56,7 +72,7 @@ func (b *Backup) Cleanup() error {
 func Fetch(ctx context.Context, from spec.From) (*Backup, error) {
 	switch from.Type {
 	case "file":
-		return fetchFile(from)
+		return fetchFile(ctx, from)
 	case "s3":
 		return fetchS3(ctx, from)
 	default:
@@ -64,7 +80,7 @@ func Fetch(ctx context.Context, from spec.From) (*Backup, error) {
 	}
 }
 
-func fetchFile(from spec.From) (*Backup, error) {
+func fetchFile(ctx context.Context, from spec.From) (*Backup, error) {
 	p := from.URI
 	if from.Select != "" {
 		var err error
@@ -89,18 +105,28 @@ func fetchFile(from spec.From) (*Backup, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	r, comp, closeDec, err := decompress(f)
+	// Decrypt first: pipelines encrypt the compressed artifact, so the
+	// ciphertext is the outer layer.
+	plain, enc, closeDecrypt, err := decrypt(ctx, f, from.Decrypt)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", p, err)
+	}
+	defer closeDecrypt()
+
+	r, comp, closeDec, err := decompress(plain)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", p, err)
 	}
 	defer closeDec()
 
-	b := &Backup{Path: p, ModTime: fi.ModTime(), Size: fi.Size(), ResolvedURI: p}
-	if comp == "" {
+	b := &Backup{Path: p, ModTime: fi.ModTime(), Size: fi.Size(), ResolvedURI: p,
+		Encryption: enc, Compression: comp}
+	if comp == "" && enc == "" {
 		return b, nil // plain artifact: restore straight from the source file
 	}
 
-	// Compressed: expand into a temp file. The backup's own mod time is
+	// Encrypted or compressed: materialize the plaintext in a private temp
+	// file (0600, removed on cleanup). The backup's own mod time is
 	// preserved — RPO measures when the backup was taken, not when we
 	// unpacked it.
 	tmp, n, err := spool(r, "firedrill-backup-*"+plainExt(p),
@@ -109,8 +135,9 @@ func fetchFile(from spec.From) (*Backup, error) {
 		return nil, err
 	}
 	b.Path = tmp
-	b.Compression = comp
-	b.UncompressedBytes = n
+	if comp != "" {
+		b.UncompressedBytes = n
+	}
 	b.cleanup = func() error { return os.Remove(tmp) }
 	return b, nil
 }
@@ -170,7 +197,13 @@ func fetchS3(ctx context.Context, from spec.From) (*Backup, error) {
 	// Cap the transferred stream, then decompress on the fly: a compressed
 	// artifact is expanded while it downloads, never staged twice on disk.
 	transferred := &capReader{r: obj.Body, limit: from.MaxBytes, what: "backup"}
-	r, comp, closeDec, err := decompress(transferred)
+	plain, enc, closeDecrypt, err := decrypt(ctx, transferred, from.Decrypt)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", resolved, err)
+	}
+	defer closeDecrypt()
+
+	r, comp, closeDec, err := decompress(plain)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", resolved, err)
 	}
@@ -191,6 +224,7 @@ func fetchS3(ctx context.Context, from spec.From) (*Backup, error) {
 		ModTime:     modTime,
 		Size:        transferred.n,
 		ResolvedURI: resolved,
+		Encryption:  enc,
 		Compression: comp,
 		cleanup:     func() error { return os.Remove(name) },
 	}

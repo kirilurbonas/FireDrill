@@ -25,7 +25,9 @@ require (
 )
 
 require (
+	filippo.io/age v1.3.1 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.18 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.38 // indirect
@@ -92,6 +94,7 @@ require (
 	go.uber.org/zap v1.27.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect

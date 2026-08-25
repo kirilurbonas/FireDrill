@@ -18,6 +18,7 @@ spec:
       # uri: s3://acme-backups/mongo/
       # select: latest
       # match: "shop-*.archive.gz"
+      # decrypt: { type: gpg, passphraseEnv: BACKUP_PASSPHRASE }
   sandbox:
     provider: docker
     image: mongo:8            # must ship the MongoDB Database Tools

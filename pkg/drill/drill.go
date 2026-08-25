@@ -98,6 +98,7 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	e.Backup.ModTime = backup.ModTime.UTC()
 	e.Backup.AgeSecs = backupAge.Seconds()
 	e.Backup.Bytes = backup.Size
+	e.Backup.Encryption = backup.Encryption
 	e.Backup.Compression = backup.Compression
 	e.Backup.UncompressedBytes = backup.UncompressedBytes
 	if backup.ResolvedURI != d.Spec.Source.From.URI {
@@ -156,8 +157,8 @@ func Run(ctx context.Context, d *spec.Drill, opts Options) (*report.Evidence, st
 	}
 	if p != nil {
 		label := backup.ResolvedURI
-		if backup.Compression != "" {
-			label += " (" + backup.Compression + ")"
+		if layers := backup.Layers(); layers != "" {
+			label += " (" + layers + ")"
 		}
 		if restoreErr == nil {
 			p.Step(fmt.Sprintf("restore  %s", label),

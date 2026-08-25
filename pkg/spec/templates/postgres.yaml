@@ -17,6 +17,8 @@ spec:
       # uri: s3://acme-backups/payments/
       # select: latest
       # match: "payments-*.dump.gz"
+      # Encrypted at rest? Decryption happens before decompression:
+      # decrypt: { type: age, identityFile: /run/secrets/age.key }
       # credentialsRef: backup-ro   # AWS profile; secrets never live in this file
       # region: eu-west-1
   sandbox:

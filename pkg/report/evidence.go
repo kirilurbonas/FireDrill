@@ -28,6 +28,9 @@ type Evidence struct {
 		// ResolvedURI is the artifact discovery actually selected when the
 		// spec URI was a prefix — an auditor must see which backup was drilled.
 		ResolvedURI string `json:"resolvedUri,omitempty"`
+		// Encryption records that the backup was encrypted at rest and that
+		// FireDrill could actually decrypt it (age/gpg).
+		Encryption string `json:"encryption,omitempty"`
 		// Compression and UncompressedBytes describe artifacts FireDrill
 		// expanded before restoring (gzip/zstd/bzip2).
 		Compression       string `json:"compression,omitempty"`

@@ -181,10 +181,51 @@ check $? 1 "ransomware canary mismatch fails the drill"
 grep -q "possible ransomware/corruption" run-ransom.log && pass "canary names the failure mode" || fail "canary detail"
 grep -q "ENCRYPTED" run-ransom.log evidence/*.json && fail "sentinel value LEAKED into output/evidence" || pass "sentinel never leaked into logs or evidence"
 rm backups/payments-2026-08-24.dump.gz
+# Put the sentinel back: a simulation that leaves the source tampered
+# poisons every backup taken after it.
+docker exec uat-pg-src psql -U postgres -d payments -c "update firedrill_canary set token='fd-canary-uat'" >/dev/null
 # No backup matches the glob.
 sed 's/payments-\*/ledger-*/' firedrill.yaml > nomatch.yaml
 firedrill run payments-db -f nomatch.yaml --key-dir "$work/keys" >/dev/null 2>&1
 check $? 2 "no matching backup is an execution error (exit 2), not a pass"
+
+########## 4b. Encrypted backups ##########
+# What a security-conscious pipeline writes: dump | gzip | age.
+if command -v age >/dev/null 2>&1 && command -v age-keygen >/dev/null 2>&1; then
+  age-keygen -o "$work/age.key" 2>/dev/null
+  recipient=$(age-keygen -y "$work/age.key")
+  docker exec uat-pg-src pg_dump -U postgres -d payments -Fc | gzip | age -r "$recipient" > backups/payments-encrypted.dump.gz.age
+  sed -e 's|match: "payments-\*.dump.gz"|match: "payments-encrypted.dump.gz.age"|' \
+      -e "s|      select: latest|      select: latest\n      decrypt: { type: age, identityFile: $work/age.key }|" \
+      -e 's|name: payments-db|name: payments-encrypted|' firedrill.yaml > encrypted.yaml
+  firedrill validate -f encrypted.yaml >/dev/null; check $? 0 "encrypted drill spec validates"
+  firedrill run payments-encrypted -f encrypted.yaml --key-dir "$work/keys" --no-color > run-enc.log 2>&1
+  check $? 0 "encrypted backup (age + gzip) drills clean"
+  grep -q "(age, gzip)" run-enc.log && pass "restore line names both layers" || fail "layers not shown: $(grep restore run-enc.log)"
+  encev=$(ls evidence/payments-encrypted-*.json | head -1)
+  if python3 - "$encev" <<'ENCPY'
+import json, sys
+e = json.load(open(sys.argv[1]))
+b = e['backup']
+assert b['encryption'] == 'age', f"encryption={b.get('encryption')}"
+assert b['compression'] == 'gzip', f"compression={b.get('compression')}"
+assert e['verified'] is True, "encrypted drill did not verify"
+ENCPY
+  then pass "evidence records the backup was encrypted"; else fail "evidence encryption fields"; fi
+  # The key must never end up in evidence or logs.
+  if grep -rq "AGE-SECRET-KEY" evidence/ ./*.log 2>/dev/null; then
+    fail "age key leaked into evidence or logs"
+  else
+    pass "decryption key never appears in evidence or logs"
+  fi
+  # An encrypted backup with no decrypt block must fail with advice.
+  sed 's|      decrypt: .*||' encrypted.yaml > nodecrypt.yaml
+  firedrill run payments-encrypted -f nodecrypt.yaml --key-dir "$work/keys" >nodecrypt.log 2>&1
+  check $? 2 "encrypted backup without a decrypt block is an execution error"
+  grep -q "source.from.decrypt" nodecrypt.log && pass "error tells the operator what to add" || fail "unhelpful error: $(cat nodecrypt.log)"
+else
+  echo "–  age CLI not installed; skipping the encrypted-backup drills"
+fi
 
 ########## 5. MySQL + MongoDB ##########
 docker rm -f uat-my-src >/dev/null 2>&1
